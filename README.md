@@ -6,6 +6,13 @@ HUD Pathing / TaimiHUD format) in game.
 **Status:** early. It captures markers, records trails, and edits them in a pack tree (categories, positions,
 icons, textures).
 
+## Install
+
+1. Install [Raidcore Nexus](https://raidcore.gg/Nexus).
+2. Download `pathing_editor.dll` from the [releases](https://github.com/ElisRandomStuff/GW2PathingEditor/releases)
+   and put it in `<Guild Wars 2>/addons/`.
+3. In game, Nexus loads it: open it with **Alt+Shift+P** or its pin icon in the Nexus bar.
+
 ## Use
 
 - **Alt+Shift+P** or the pin icon in the Nexus bar opens the window.
@@ -168,4 +175,6 @@ endorsed by ArenaNet, NCSOFT or Raidcore.
 
 ## License
 
-[MIT](LICENSE). The DLL also contains the libraries listed above, under their own licences.
+[MIT](LICENSE). The DLL also contains the libraries listed above, under their own licences:
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) has their notices and ships with every release (regenerate it
+with `scripts/third_party_notices.py` when dependencies change).
