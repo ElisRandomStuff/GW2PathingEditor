@@ -1,0 +1,4 @@
+# Used by rustup (ignored by a distro-packaged Rust). The addon is a Windows DLL.
+[toolchain]
+channel = "stable"
+targets = ["x86_64-pc-windows-gnu"]

@@ -1,0 +1,26 @@
+# Third-party reference sources (recreate with scripts/fetch-references.sh)
+/reference/
+
+# Build output
+/build/
+/out/
+*.dll
+*.pdb
+*.obj
+*.lib
+*.exp
+*.ilk
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Cargo
+/target/

@@ -1,0 +1,12 @@
+# Cross-compiling the Nexus DLL from Linux with MinGW-w64 (see scripts/build.sh).
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+# Link the C runtime pieces (libgcc, winpthread) into the DLL: players don't have the MinGW DLLs.
+# scripts/build.sh checks the result.
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# ImGui's C++ (compiled by arcdps-imgui-sys) otherwise imports __cxa_guard_acquire/release from
+# libstdc++-6.dll for its function-local statics. ImGui only runs on the render thread, so the
+# thread-safe guards aren't needed, and without them the DLL needs no libstdc++ at all.
+CXXFLAGS_x86_64_pc_windows_gnu = "-fno-threadsafe-statics"

@@ -1,0 +1,24 @@
+[package]
+name = "pathing_editor"
+version = "0.1.0"
+edition = "2024"
+authors = ["Eli"]
+description = "Create and edit GW2 marker packs (TacO / Blish HUD Pathing / TaimiHUD) in game. Raidcore Nexus addon."
+publish = false
+
+[lib]
+# Nexus addons are DLLs. Unit tests still build and run on the host (Linux).
+crate-type = ["cdylib"]
+
+[dependencies]
+getrandom = "0.3"
+roxmltree = "0.20"
+
+# The addon glue only exists on Windows. Everything else (pack logic, XML) is plain Rust
+# and is unit-tested on the host with `cargo test`.
+[target.'cfg(windows)'.dependencies]
+nexus = { git = "https://github.com/zerthox/nexus-rs", tag = "0.12.0", features = ["mumble"] }
+
+[profile.release]
+lto = "thin"
+strip = true
