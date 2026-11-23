@@ -3,11 +3,16 @@
 //! of markers or trail points (Ctrl+click, Shift+click).
 //!
 //! - this file: the window, its toolbar and the clipboard;
+//! - `archive`: the toolbar's Import... and Export... popups;
 //! - `tree`: the left pane;
 //! - `details`: the right pane, for the whole pack, a category, markers or a trail;
-//! - `attributes`: the image picker and the visibility checkboxes used in the details.
+//! - `attributes`: the image picker and the visibility checkboxes used in the details;
+//! - `conditions`: the filter attributes and the `script-*` attributes, checked against the
+//!   pack's `.lua` files.
 
+mod archive;
 mod attributes;
+mod conditions;
 mod details;
 mod tree;
 
@@ -20,10 +25,14 @@ use super::{
 use crate::{
     clipboard::{self, Clip},
     editor::{Editor, Selection, StatusKind},
+    scripts::LuaScan,
     trail,
 };
 use nexus::imgui::{ChildWindow, Condition, StyleVar, Ui, Window};
-use std::{cell::RefCell, collections::BTreeSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 const SELECT_HINT: &str = "Click to select, Ctrl+click to add or remove, Shift+click for a range.";
 
@@ -50,6 +59,16 @@ struct State {
     point_anchor: Option<usize>,
     /// The section "Continue its line" continues. `None`: the one ending closest to you.
     continue_section: Option<usize>,
+    /// Text boxes of the condition and script attributes, by attribute. Filled from the
+    /// selection when first drawn.
+    text_edits: BTreeMap<&'static str, String>,
+    /// The pack's `.lua` files, read when the scripts are first shown and on "Rescan".
+    lua: Option<LuaScan>,
+    /// The archives in the import folder, listed when the Import popup opens.
+    imports: Vec<String>,
+    /// The Export popup's name, and its extension (index in `archive::EXTENSIONS`).
+    export_name: String,
+    export_extension: usize,
 }
 
 impl Default for State {
@@ -68,6 +87,11 @@ impl Default for State {
             poi_anchor: None,
             point_anchor: None,
             continue_section: None,
+            text_edits: BTreeMap::new(),
+            lua: None,
+            imports: Vec::new(),
+            export_name: String::new(),
+            export_extension: 0,
         }
     }
 }
@@ -161,6 +185,10 @@ fn toolbar(ui: &Ui, editor: &mut Editor, state: &mut State, live: &Live) {
         ui,
         "Same, but moved together so the first one is where you stand.",
     );
+    ui.same_line();
+    ui.text_disabled("|");
+    ui.same_line();
+    archive::buttons(ui, editor, state);
     ui.same_line();
     ui.text_disabled("|");
     ui.same_line();

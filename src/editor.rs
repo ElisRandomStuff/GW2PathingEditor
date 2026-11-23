@@ -1,7 +1,7 @@
 //! Editor state and actions, independent of Nexus and ImGui.
 
 use crate::{
-    clipboard, files,
+    archive, clipboard, files,
     format::fmt_float,
     geometry::{add, distance, sub},
     guid, namespace,
@@ -1317,6 +1317,116 @@ impl Editor {
         self.delete_trail_file(&trail);
     }
 
+    // ---- Archives ----
+
+    /// Writes the pack to `export/<name>.<extension>` (`zip` or `taco`): the XML, then the
+    /// images, `.trl` and `.lua` files it uses. Says how it went in the status.
+    pub fn export(&mut self, name: &str, extension: &str) {
+        self.flush();
+        self.save();
+        let name = archive::safe_file_name(name);
+        let out = self
+            .dir
+            .join(archive::EXPORT_DIR)
+            .join(format!("{name}.{extension}"));
+        match archive::export(&self.dir, &self.pack, &out, &format!("{name}.xml")) {
+            Ok(report) if report.missing.is_empty() => self.set_status(
+                StatusKind::Info,
+                format!(
+                    "Exported {} (the XML and {} file(s)).",
+                    out.display(),
+                    report.files.len()
+                ),
+            ),
+            Ok(report) => self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Exported {}, without {} file(s) the pack uses but the folder doesn't have: {}.",
+                    out.display(),
+                    report.missing.len(),
+                    report.missing.join(", ")
+                ),
+            ),
+            Err(e) => self.set_status(StatusKind::Error, format!("Export failed: {e}")),
+        }
+    }
+
+    /// Replaces the pack with the archive `file` of `import/`, after backing the current one up
+    /// to `export/backup-<date>.zip`. Says how it went in the status.
+    pub fn import(&mut self, file: &str) {
+        match self.try_import(file) {
+            Ok((kind, text)) => self.set_status(kind, text),
+            Err(e) => self.set_status(StatusKind::Error, format!("Import failed: {e}")),
+        }
+    }
+
+    fn try_import(&mut self, file: &str) -> Result<(StatusKind, String), String> {
+        if self.recorder.is_some() {
+            return Err("stop the trail being recorded first.".into());
+        }
+        if !self.persist {
+            return Err(format!(
+                "{CAPTURES_FILE} couldn't be read, so the folder is left alone. Reload the addon first."
+            ));
+        }
+        let path = files::resolve(&self.dir.join(archive::IMPORT_DIR), file)
+            .ok_or_else(|| format!("{file} isn't a file name."))?;
+        // Read and check it all before changing anything.
+        let import = archive::read_archive(&path)?;
+        let mut notes = import.warnings.clone();
+        let xml_files = import.xml_files;
+        let (categories, pois, trails) = (
+            import.pack.categories.len(),
+            import.pack.pois.len(),
+            import.pack.trails.len(),
+        );
+
+        self.flush();
+        let backup = if archive::folder_files(&self.dir).is_empty() {
+            None
+        } else {
+            let out = self
+                .dir
+                .join(archive::EXPORT_DIR)
+                .join(archive::backup_name());
+            archive::backup(&self.dir, &out).map_err(|e| {
+                format!("couldn't back up the current pack ({e}), so nothing was changed.")
+            })?;
+            Some(out)
+        };
+        let written = import.replace_folder(&self.dir).map_err(|e| match &backup {
+            Some(b) => format!(
+                "{e}. The folder may be half replaced: the previous pack is in {}, import it to get it back.",
+                b.display()
+            ),
+            None => e,
+        })?;
+
+        let mut fresh = Editor::open(&self.dir);
+        fresh.settings = self.settings.clone();
+        fresh.saved_settings = self.saved_settings.clone();
+        let reopened = fresh.status.take();
+        *self = fresh;
+
+        let mut text = format!(
+            "Imported {file} ({xml_files} XML file(s)): {categories} top-level categories, {pois} markers, {trails} trails, {written} other files."
+        );
+        if let Some(b) = &backup {
+            text.push_str(&format!(" The previous pack is in {}.", b.display()));
+        }
+        notes.extend(reopened.map(|s| s.text));
+        let kind = if notes.is_empty() {
+            StatusKind::Info
+        } else {
+            StatusKind::Warning
+        };
+        for note in notes {
+            text.push(' ');
+            text.push_str(&note);
+        }
+        Ok((kind, text))
+    }
+
     // ---- Saving ----
 
     /// Writes whatever isn't on disk yet. Call before dropping the editor.
@@ -1437,6 +1547,49 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pathing_editor_test_{name}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn export_and_import() {
+        let dir = temp_dir();
+        let mut editor = Editor::open(&dir);
+        editor.settings.preview = !editor.settings.preview;
+        editor.capture(50, [1.0, 2.0, 3.0]).unwrap();
+        editor.export("My Pack", "taco");
+        assert_eq!(editor.status.as_ref().unwrap().kind, StatusKind::Info);
+        let exported = dir.join(archive::EXPORT_DIR).join("My Pack.taco");
+        assert!(exported.is_file());
+
+        // Another pack is opened in its place...
+        editor.capture(50, [9.0, 9.0, 9.0]).unwrap();
+        fs::create_dir_all(dir.join(archive::IMPORT_DIR)).unwrap();
+        fs::copy(&exported, dir.join(archive::IMPORT_DIR).join("a.taco")).unwrap();
+        let settings = editor.settings.clone();
+        editor.import("a.taco");
+        let status = editor.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Info, "{}", status.text);
+        assert!(status.text.contains("backup-"), "{}", status.text);
+        assert_eq!(editor.pack.pois.len(), 1, "replaced, not merged");
+        assert_eq!(editor.pack.pois[0].pos, [1.0, 2.0, 3.0]);
+        assert_eq!(editor.settings, settings, "settings kept");
+        assert_eq!(Editor::open(&dir).pack, editor.pack, "saved");
+
+        // ...and the backup holds the one it replaced.
+        let backup = fs::read_dir(dir.join(archive::EXPORT_DIR))
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("backup-"))
+            .unwrap();
+        fs::copy(backup.path(), dir.join(archive::IMPORT_DIR).join("b.zip")).unwrap();
+        editor.import("b.zip");
+        assert_eq!(editor.pack.pois.len(), 2);
+
+        editor.import("../captures.xml");
+        assert_eq!(editor.status.as_ref().unwrap().kind, StatusKind::Error);
+        editor.import("missing.zip");
+        assert_eq!(editor.status.as_ref().unwrap().kind, StatusKind::Error);
+        assert_eq!(editor.pack.pois.len(), 2, "a failed import changes nothing");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -21,7 +21,7 @@ Rust, on `nexus-rs` (notes: `docs/04-nexus-addon-api.md` §7). Decisions: `docs/
 - `cargo test` runs the tests on the host. `scripts/build.sh` cross-compiles the DLL
   (`x86_64-pc-windows-gnu`, MinGW) and checks that it doesn't import MinGW runtime DLLs.
 - Addon data goes in `<GW2>/addons/PathingEditor/` (`captures.xml`, `trails/*.trl`, `images/`,
-  `settings.ini`). No GW2 API calls from the addon.
+  `settings.ini`, `import/` and `export/` for archives). No GW2 API calls from the addon.
 - No hard-coded keyboard shortcuts in the windows (they clash with players' bindings): use buttons, and Nexus
   keybinds unbound by default (`"(null)"`).
 - Paths read from packs (`trailData`, `iconFile`, `texture`) go through `files::resolve`, which keeps them inside

@@ -67,6 +67,13 @@ Notes were compiled on 2026-11-22.
 - Icons and textures come from `<GW2>/addons/PathingEditor/images/`, which the user fills.
 - **No hard-coded keyboard shortcuts** in the windows: they clashed with players' own bindings. Actions are buttons;
   the few that need a key are Nexus keybinds, unbound by default. Ctrl/Shift+click selection is fine.
+- **Lua scope (2026-11-23):** the editor edits the declarative filter attributes (docs/02 §5) and the `script-*`
+  attributes, and checks that the latter name global functions the pack's `.lua` files define and load (docs/03
+  §7). It doesn't edit, run or syntax-check Lua.
+- **Archives (2026-11-23):** *Export...* writes `export/<name>.zip|.taco` (XML + used images, `.trl`, `.lua`).
+  *Import...* takes a pack from `import/` and **replaces** the current one, after backing up the whole folder
+  (except `import/`, `export/`, `settings.ini`) to `export/backup-<date>.zip`. No in-game file dialog. Uses the
+  `zip` crate with flate2's pure-Rust backend.
 - Undo/redo covers markers and trail points (snapshots); category edits and whole-trail creation/deletion aren't
   undoable yet.
 
@@ -74,4 +81,3 @@ Notes were compiled on 2026-11-22.
 
 - Should the addon also *display* other installed packs (to learn their categories, as TacO does), or only the pack
   being edited?
-- Scope of Lua support: edit `script-*` attributes and attach `.lua` files only (no execution) is the assumption.

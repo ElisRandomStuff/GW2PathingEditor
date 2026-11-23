@@ -15,6 +15,8 @@ crate-type = ["cdylib"]
 [dependencies]
 getrandom = "0.3"
 roxmltree = "0.20"
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # The addon glue only exists on Windows. Everything else (pack logic, XML) is plain Rust
 # and is unit-tested on the host with `cargo test`.

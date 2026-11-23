@@ -236,6 +236,16 @@ impl Pack {
         chain.iter().rev().find_map(|c| attrs::get(&c.attrs, name))
     }
 
+    /// Adds another document's categories (merged by name, later attributes win, like the
+    /// overlays), markers and trails.
+    pub fn merge(&mut self, other: Pack) {
+        for category in other.categories {
+            merge(&mut self.categories, category);
+        }
+        self.pois.extend(other.pois);
+        self.trails.extend(other.trails);
+    }
+
     /// Creates the missing categories of `ns`.
     pub fn ensure_category(&mut self, ns: &str) {
         ensure(&mut self.categories, ns);

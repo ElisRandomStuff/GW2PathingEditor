@@ -36,6 +36,8 @@ Pack:CreateMarker({ type = "ep.cat", xpos = p.X, ypos = p.Z, zpos = p.Y, iconFil
 
 ## 3. Script attributes (XML → Lua)
 
+They work on markers and trails alike (`StandardTrail_Behaviors.cs:33`), and are inherited from categories.
+
 | Attribute | Lua signature | Fires |
 |-|-|-|
 | `script-once="F(a,b)"` | `F(marker, a, b)` | once after all packs loaded |
@@ -48,6 +50,22 @@ Argument literal parsing (`Script.cs` `GetValueFromString`): `nil` → nil; text
 string); int → Int32; `true`/`false` (case-insensitive) → bool; otherwise a string with surrounding `'`/`"` trimmed.
 The split is on `,` with no quoting, so **commas and parentheses inside string args are not supported**. If a pack
 author needs complex args, they should pass a key and look it up in a Lua table.
+
+More `SplitFunc` / `GetValueFromString` edges (`Script.cs:92-150`), all checked by the editor (`src/scripts.rs`):
+
+- The name is `parts[0]` of `Split('(')`, **not trimmed**: `F (1)` looks up `"F "`. Only `parts[1]` is used, so a
+  second `(` drops everything after it.
+- The args text is `Trim(' ', ')')`. Each arg is **not trimmed**: ` true` is the string `" true"`, ` 'a'` is
+  `" 'a"`. Numbers still parse with spaces (.NET `TryParse` allows them). Floats parse with the current Windows
+  culture, so a `.` may not be the decimal separator on every PC.
+- An empty arg (`F(1,,2)`, `F(1,)`) throws on `value[0]`; the exception is caught and **the whole attribute is
+  ignored** (warning in the Blish log only).
+- The call is `Global.CallMemberDirect(name, args, ignoreCase: true, rawGet: false, throwExceptions: true,
+  ignoreNilFunction: true)` (`ScriptEngine.cs:139`; parameter names from NeoLua's signature, which isn't in
+  `reference/`). So the name is **one global key, matched case-insensitively**: `MyPack.Fn` never resolves, and a
+  **missing function is silently skipped**. `local` functions aren't globals, so they can't be called either.
+- `pack.lua` is loaded after the pack's XML; `Pack:Require` lowercases the path, appends `.lua`, and the lookup is
+  case-insensitive (zip: `AsyncSafeZipArchive.GetUniformFilePath`; folders: Windows). Each file loads once per pack.
 
 ## 4. Global API (libdef `library/global/*.lua`)
 
@@ -159,10 +177,19 @@ Pack:Require("Data/ExamplePack/Scripts/TriggerFunction.lua")
 Pack:Require("Data/ExamplePack/Scripts/menu.lua")   -- after the functions it references
 ```
 
-## 7. Editor implications
+## 7. Editor implications (decided 2026-11-23)
 
-- Expose `script-*` fields as free text with **syntax validation** matching `SplitFunc`: identifier, optional
-  `(...)`, no commas or parens inside string args. Warn if the referenced function name doesn't appear in any
-  pack `.lua` (a cheap regex scan for `function Name(` / `Name = function`).
-- Ship or offer the libdef files when creating a scripted pack, and keep them out of the exported archive.
-- Show a "Blish-only" badge. Scripts are invisible to TacO and TaimiHUD users.
+The editor **doesn't edit, run or syntax-check Lua**: that's left to real Lua tools. It only checks that the
+`script-*` attributes line up with the pack's scripts (`src/scripts.rs`):
+
+- Each value is split exactly like `SplitFunc` (§3), with errors for what Pathing ignores and warnings for what it
+  reads differently than written.
+- The `.lua` files under the addon folder are tokenized (comments and strings skipped) to find global
+  definitions (`function F(`, `F = function(`, `_G.F`), `local` ones, and literal `Pack:Require` targets. Starting
+  at `pack.lua`, the requires are followed depth first to know which files Pathing loads and in which order.
+  Folders whose path contains `libdef` (the IntelliSense stubs) are skipped.
+- Per attribute: the function exists as a loaded global (else: local, in an unloaded file, no `pack.lua`, or
+  missing), same spelling, defined once, and its parameter count vs. what Pathing passes (the hook's values + the
+  attribute's args).
+- The whole-pack view lists the files (loaded or not), missing requires, and every script attribute with its status.
+- Scripts are flagged "Blish HUD only". Keep the libdef files out of exported archives.

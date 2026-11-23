@@ -114,7 +114,7 @@ fn set_flag(editor: &mut Editor, target: &Selection, attr: &str, value: bool) {
 }
 
 /// The parent namespace of a category (empty at the top).
-fn parent(ns: &str) -> &str {
+pub(super) fn parent(ns: &str) -> &str {
     ns.rsplit_once('.').map_or("", |(parent, _)| parent)
 }
 
@@ -243,7 +243,7 @@ pub(super) fn image_picker(ui: &Ui, editor: &mut Editor, state: &mut State) {
 }
 
 /// The value of `attr` (own, not inherited) for each item of `target`.
-fn attr_values(editor: &Editor, target: &Selection, attr: &str) -> Vec<Option<String>> {
+pub(super) fn attr_values(editor: &Editor, target: &Selection, attr: &str) -> Vec<Option<String>> {
     let get = |attrs: &Attrs| attrs::get(attrs, attr).map(str::to_owned);
     match target {
         Selection::Category(ns) => editor
@@ -269,7 +269,12 @@ fn attr_values(editor: &Editor, target: &Selection, attr: &str) -> Vec<Option<St
 
 /// Changes the attributes of every item of `target` (undoable for markers). Call
 /// [`Editor::commit`] after.
-fn edit_attrs(editor: &mut Editor, target: &Selection, label: &str, f: impl Fn(&mut Attrs)) {
+pub(super) fn edit_attrs(
+    editor: &mut Editor,
+    target: &Selection,
+    label: &str,
+    f: impl Fn(&mut Attrs),
+) {
     match target {
         Selection::Category(ns) => {
             if let Some(category) = editor.pack.category_mut(ns) {
@@ -289,6 +294,31 @@ fn edit_attrs(editor: &mut Editor, target: &Selection, label: &str, f: impl Fn(&
                 f(&mut trail.attrs);
             }
         }
+    }
+}
+
+/// The value each item of `target` would inherit for `attr` from its categories, ignoring its
+/// own.
+pub(super) fn inherited_values(
+    editor: &Editor,
+    target: &Selection,
+    attr: &str,
+) -> Vec<Option<String>> {
+    let pack = &editor.pack;
+    let get = |category: &str| pack.inherited(category, &[], attr).map(str::to_owned);
+    match target {
+        Selection::Category(ns) => vec![get(parent(ns))],
+        Selection::Pois(set) => set
+            .iter()
+            .filter_map(|&i| pack.pois.get(i))
+            .map(|p| get(&p.category))
+            .collect(),
+        Selection::Trail(i) => pack
+            .trails
+            .get(*i)
+            .map(|t| get(&t.category))
+            .into_iter()
+            .collect(),
     }
 }
 

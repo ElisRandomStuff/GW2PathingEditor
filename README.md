@@ -4,7 +4,7 @@ A [Raidcore Nexus](https://raidcore.gg/Nexus) addon for Guild Wars 2 to create a
 HUD Pathing / TaimiHUD format) in game.
 
 **Status:** early. It captures markers, records trails, and edits them in a pack tree (categories, positions,
-icons, textures).
+icons, textures, conditions, script hooks).
 
 ## Install
 
@@ -76,10 +76,23 @@ Select an item to edit it on the right:
   together, copy or delete them. The selected trail's points are marked in the world, the selected ones in blue.
 - **Where it shows:** *in the world*, *on the map*, *on the minimap* (`inGameVisibility`, `mapVisibility`,
   `miniMapVisibility`; all on by default, inherited from the categories).
+- **Conditions** (categories, markers, trails): when the overlays show it. Festivals, mounts, professions, races and
+  map types as checkboxes; specializations, achievement (+ bit), schedule (+ duration) and raid encounters as text.
+  Values inherited from the categories show greyed in the box. Unknown names, bad numbers, a schedule without a
+  duration and the like are flagged in yellow. The editor doesn't evaluate them: that's the overlays' job (with the
+  player's API key for achievements and raids).
+- **Scripts (Blish HUD only)**: the `script-once`, `-tick`, `-focus`, `-trigger` and `-filter` attributes, e.g.
+  `MyPack_OnTrigger(3,'chest')`. Each is checked against the `.lua` files in the addon folder, the way Pathing
+  calls it: Pathing starts at `pack.lua` and loads the others with `Pack:Require("...")`. You see where the function
+  is (`Calls MyPack_OnTrigger(marker, isAutoTriggered, 3, "chest") in data/scripts/main.lua:12`), or why Pathing
+  won't call it: missing, `local`, in a file nothing requires, a `Table.Function` name, an empty argument (Pathing
+  drops the whole attribute), spaces that change an argument's type, or a different number of parameters. The
+  *Whole pack* view (nothing selected) lists the `.lua` files and every script attribute, click one to select it.
+  Write and check the Lua itself with a Lua editor; *Rescan scripts* picks up your changes.
 - **Choose...** picks an image from `images/`, with previews. Put your PNGs there (subfolders work), lowercase
   names without spaces for the best compatibility.
-- **Undo / Redo** (buttons): adding, moving, deleting, pasting markers and trail points, their category, icon and
-  visibility, and recording more of a trail. Not undoable: category edits, pasting or deleting whole trails.
+- **Undo / Redo** (buttons): adding, moving, deleting, pasting markers and trail points, their category, icon,
+  visibility, conditions and scripts, and recording more of a trail. Not undoable: category edits, pasting or deleting whole trails.
 - **Copy / Paste / Paste here** (buttons) go through the clipboard as text:
   - Markers and trails as `<POI>` / `<Trail>` lines, so you can paste lines from another pack's file, or paste
     ours into one. Pasted items get new GUIDs, and go into the selected category if one is.
@@ -89,6 +102,13 @@ Select an item to edit it on the right:
   - Trail points as `x, y, z` lines, pasted after the selected point of the selected trail.
   - *Paste here* moves what's pasted so the first item is where you stand.
 - Attributes the editor doesn't handle yet are kept as they are and listed under the item.
+- **Export...** writes the pack to `export/<name>.zip` or `.taco` (the same file, two names): the XML at the root,
+  then the images, `.trl` files and `.lua` scripts it uses, at their paths. Files the pack uses but the folder
+  lacks are listed in the status. Ready to drop into TacO's, Blish HUD's or TaimiHUD's marker folder.
+- **Import...** opens a `.zip` / `.taco` pack you put in `import/`, **in place of** the one you're editing. All its
+  XML files are merged into `captures.xml`, and its other files are unpacked at their paths. The current pack is
+  first backed up to `export/backup-<date>.zip` (every file of the folder but `import/`, `export/` and
+  `settings.ini`); import that backup to get it back. Paths outside the pack (absolute, `..`) are skipped.
 
 ### Seeing the pack in TaimiHUD
 
@@ -112,6 +132,8 @@ All in `<GW2>/addons/PathingEditor/`:
 - `images/`: your icons and textures. Paths in the XML (`images/chest.png`, `trails/map50_1.trl`) are relative to
   the addon folder, the way they are relative to a pack's root.
 - `settings.ini`: the window's options.
+- `import/`: packs (`.zip`, `.taco`) to import. `export/`: exports and the backups made before an import. Neither
+  is part of the pack.
 
 ## Build (from Linux)
 
@@ -138,10 +160,13 @@ Everything outside `src/addon/` is platform-independent and unit-tested on Linux
 | `view.rs` | How things look in game: camera and map projection, styles inherited from categories |
 | `clipboard.rs` | Copy/paste text: `<POI>`/`<Trail>` lines, `x, y, z` lines |
 | `settings.rs`, `images.rs` | `settings.ini`; the PNGs of `images/` |
+| `conditions.rs` | The filter attributes (festival, mount, profession, schedule, ...): known values and checks |
+| `archive.rs` | `.zip` / `.taco`: export, folder backup, import in place of the pack |
+| `scripts.rs` | `script-*` attributes: split like Pathing, checked against the functions of the pack's `.lua` files |
 | `attrs.rs`, `namespace.rs`, `files.rs`, `geometry.rs`, `format.rs`, `guid.rs` | Small helpers |
 
 `src/addon/` is the Nexus side (Windows only): `mod.rs` (loading, keybinds, MumbleLink), `ui.rs` (main window),
-`pack_window/` (pack editor: tree, details, attribute editors), `preview.rs` (drawing in the world and on the maps),
+`pack_window/` (pack editor: tree, details, attribute editors, conditions and scripts, import/export), `preview.rs` (drawing in the world and on the maps),
 `thumbnails.rs` (textures for images).
 
 ## Credits
@@ -167,8 +192,10 @@ the file formats and formulas these projects established.
   by Zerthox (MIT): the Rust bindings this addon is built on. With them come
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT) through
   [arcdps-imgui](https://github.com/gw2scratch/imgui-rs) (MIT / Apache-2.0), and
-  [roxmltree](https://github.com/RazrFalcon/roxmltree) and [getrandom](https://github.com/rust-random/getrandom)
-  (MIT / Apache-2.0).
+  [roxmltree](https://github.com/RazrFalcon/roxmltree), [getrandom](https://github.com/rust-random/getrandom),
+  [zip](https://github.com/zip-rs/zip2) and [flate2](https://github.com/rust-lang/flate2-rs) with
+  [miniz_oxide](https://github.com/Frommi/miniz_oxide) (MIT / Apache-2.0, and others for their dependencies: see
+  `THIRD-PARTY-NOTICES.txt`).
 
 Guild Wars 2 is a trademark of ArenaNet, LLC and NCSOFT Corporation. This project isn't affiliated with or
 endorsed by ArenaNet, NCSOFT or Raidcore.

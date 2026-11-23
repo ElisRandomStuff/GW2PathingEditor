@@ -3,6 +3,7 @@
 use super::{
     Moved, SELECT_HINT, State,
     attributes::{image_attr, other_attrs, show_other_attrs, visibility_row},
+    conditions::{conditions_section, edited_attrs, pack_scripts, scripts_section},
     copy, delete_selection, multi_select,
 };
 use crate::{
@@ -59,6 +60,9 @@ fn fill_edits(editor: &Editor, state: &mut State) {
     state.new_child.clear();
     state.display_name.clear();
     state.category.clear();
+    state.text_edits.clear();
+    // Pick up edits made to the .lua files meanwhile.
+    state.lua = None;
     match &editor.selection {
         Some(Selection::Category(ns)) => {
             if let Some(category) = editor.pack.category(ns) {
@@ -102,6 +106,8 @@ fn pack_details(ui: &Ui, editor: &mut Editor, state: &mut State) {
          <Trail> lines.",
         editor.dir().join(trail::TRAILS_DIR).display()
     ));
+    ui.separator();
+    pack_scripts(ui, editor, state);
 }
 
 fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State, ns: &str) {
@@ -112,7 +118,12 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
     let display = category.display_name().to_owned();
     let other_attrs = other_attrs(
         &category.attrs,
-        &[&["DisplayName", "iconFile"][..], &Visibility::ATTRS[..]].concat(),
+        &[
+            &["DisplayName", "iconFile"][..],
+            &Visibility::ATTRS[..],
+            &edited_attrs()[..],
+        ]
+        .concat(),
     );
     let (pois, trails) = editor.pack.count_within(ns);
 
@@ -156,6 +167,8 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
         "Markers of this category and its subcategories use it unless they set their own.",
     );
     visibility_row(ui, editor, &target);
+    conditions_section(ui, editor, state, &target);
+    scripts_section(ui, editor, state, &target);
     ui.separator();
 
     if ui.button("Add marker here") {
@@ -264,7 +277,12 @@ fn poi_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State, i: 
     let xml = poi.poi_xml();
     let other_attrs = other_attrs(
         &poi.attrs,
-        &[&["iconFile"][..], &Visibility::ATTRS[..]].concat(),
+        &[
+            &["iconFile"][..],
+            &Visibility::ATTRS[..],
+            &edited_attrs()[..],
+        ]
+        .concat(),
     );
     let distance = live.position_on(map_id).map(|pos| poi.distance_to(pos));
 
@@ -322,6 +340,8 @@ fn poi_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State, i: 
         "Overrides the category's icon. Empty: the category's icon (or the overlay's default).",
     );
     visibility_row(ui, editor, &target);
+    conditions_section(ui, editor, state, &target);
+    scripts_section(ui, editor, state, &target);
     ui.separator();
 
     if ui.button("Copy <POI>") {
@@ -396,6 +416,8 @@ fn group_details(
         "Sets (or clears) the icon of all of them.",
     );
     visibility_row(ui, editor, &target);
+    conditions_section(ui, editor, state, &target);
+    scripts_section(ui, editor, state, &target);
     ui.separator();
 
     if ui.button("Copy") {
@@ -437,7 +459,12 @@ fn trail_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State, i
     let map_id = trail.map_id;
     let other_attrs = other_attrs(
         &trail.attrs,
-        &[&["texture"][..], &Visibility::ATTRS[..]].concat(),
+        &[
+            &["texture"][..],
+            &Visibility::ATTRS[..],
+            &edited_attrs()[..],
+        ]
+        .concat(),
     );
     let recording = editor.recording().is_some_and(|(r, _)| r == i);
     let here = live.position_on(map_id);
@@ -479,6 +506,8 @@ fn trail_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State, i
         "Repeated along the trail. Empty: the category's texture (or the overlay's default).",
     );
     visibility_row(ui, editor, &target);
+    conditions_section(ui, editor, state, &target);
+    scripts_section(ui, editor, state, &target);
     ui.separator();
 
     if recording {

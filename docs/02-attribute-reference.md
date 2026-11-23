@@ -102,7 +102,7 @@ Legend:
 | `schedule` | M, T, C | cron string | ✘✔✔ | UTC. 5-field (minute-resolution) or 6-field (with seconds) Cronos syntax (`* , - / L W ? #`). |
 | `schedule-duration` | M, T, C | float min | ✘✔✔ | Required with `schedule`. Visible during [start, start+duration). Examples: `0 0 * * 3` + `1440` = all of Wednesday; `20 2/6 * * *` + `15` = Ley-Line Anomaly (Iron Marches). |
 | `raid` | M, T, C | list of raid encounter ids | ✘✔✔ | `/v2/raids` ids, e.g. `twisted_castle,xera`. Hides when cleared this week. |
-| `script-filter` | M | Lua call | ✘✔✘ | See §7. |
+| `script-filter` | M, T, C | Lua call | ✘✔✘ | See §7. |
 
 ## 6. `behavior` values
 
@@ -124,6 +124,9 @@ State is keyed by GUID (01 §12). TacO's in-game activation key is `ActivatePOI`
 range with behaviour ≠ 0, plus `toggleCategory` and non-auto `copy`.
 
 ## 7. Lua script attributes (Pathing only)
+
+On markers **and trails** (`StandardMarker_Behaviors.cs`, `StandardTrail_Behaviors.cs`), and inherited from
+categories like every attribute.
 
 | Attribute | Called with | When |
 |-|-|-|

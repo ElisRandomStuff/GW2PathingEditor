@@ -7,8 +7,10 @@
 // Parts of the core are only used by the Windows-only addon module.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+mod archive;
 mod attrs;
 mod clipboard;
+mod conditions;
 mod editor;
 mod files;
 mod format;
@@ -17,6 +19,7 @@ mod guid;
 mod images;
 mod namespace;
 mod pack;
+mod scripts;
 mod settings;
 mod trail;
 mod view;
