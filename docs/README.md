@@ -56,7 +56,8 @@ Notes were compiled on 2026-11-22.
 - **Rust** with [`nexus-rs`](https://github.com/zerthox/nexus-rs) (`0.12.0`, ImGui 1.80 via `arcdps-imgui`),
   cross-compiled from Linux to `x86_64-pc-windows-gnu` with MinGW-w64. Rust-specific notes: 04 §7. The C++
   samples in these notes stay as reference.
-- Signature `-0x24dc02d4` (random negative). Local development only for now; GitHub / Raidcore hosting later.
+- Signature `-0x24dc02d4` (random negative). Public on GitHub, MIT
+  ([ElisRandomStuff/GW2PathingEditor](https://github.com/ElisRandomStuff/GW2PathingEditor)); Raidcore listing later.
 - Packs live in `<GW2>/addons/PathingEditor/`. Users manage the files themselves (no publishing to Blish/TaimiHUD
   folders from the addon for now).
 - **No GW2 API calls from the addon.** The editor only lets authors *set* API-driven attributes (`achievementId`,

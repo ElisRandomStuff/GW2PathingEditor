@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Eli"]
 description = "Create and edit GW2 marker packs (TacO / Blish HUD Pathing / TaimiHUD) in game. Raidcore Nexus addon."
+license = "MIT"
+repository = "https://github.com/ElisRandomStuff/GW2PathingEditor"
 publish = false
 
 [lib]

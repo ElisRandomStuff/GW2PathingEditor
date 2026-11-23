@@ -136,3 +136,36 @@ Everything outside `src/addon/` is platform-independent and unit-tested on Linux
 `src/addon/` is the Nexus side (Windows only): `mod.rs` (loading, keybinds, MumbleLink), `ui.rs` (main window),
 `pack_window/` (pack editor: tree, details, attribute editors), `preview.rs` (drawing in the world and on the maps),
 `thumbnails.rs` (textures for images).
+
+## Credits
+
+Pathing Editor builds on the work of the Guild Wars 2 overlay community. None of their code is included here (the
+`reference/` clones are git-ignored): the notes in `docs/` describe it, with sources, and the addon reimplements
+the file formats and formulas these projects established.
+
+- [GW2TacO](https://github.com/BoyC/GW2TacO) by BoyC (CC BY-NC 4.0): the marker pack format, its in-game editor
+  and trail recorder, and the minimap and world map placement the preview follows.
+- [Blish HUD](https://github.com/blish-hud/Blish-HUD) and its [Pathing](https://github.com/blish-hud/Pathing)
+  module (MIT), [TmfLib](https://github.com/dlamkins/TmfLib) (CPOL), the
+  [Pathing wiki](https://github.com/dlamkins/gw2pathing-wiki) and
+  [Lua definitions](https://github.com/dlamkins/gw2pathing-libdef), by Dade Lamkins and the Blish HUD team: how
+  packs are read and drawn, and the attribute and Lua documentation.
+- [TaimiHUD](https://github.com/TaimiHUD/TaimiHUD) by kittywitch (MIT): pack loading and map trails in a Nexus
+  addon.
+- [Raidcore Nexus](https://raidcore.gg/Nexus), with [Nexus-API](https://github.com/RaidcoreGG/Nexus-API),
+  [GW2-Compass](https://github.com/RaidcoreGG/GW2-Compass) and
+  [gw2-mumble-cpp](https://github.com/RaidcoreGG/gw2-mumble-cpp) (MIT): the addon loader, its API and examples,
+  and the MumbleLink layout.
+- [nexus-rs](https://github.com/zerthox/nexus-rs) and [gw2-mumble-rs](https://github.com/zerthox/gw2-mumble-rs)
+  by Zerthox (MIT): the Rust bindings this addon is built on. With them come
+  [Dear ImGui](https://github.com/ocornut/imgui) (MIT) through
+  [arcdps-imgui](https://github.com/gw2scratch/imgui-rs) (MIT / Apache-2.0), and
+  [roxmltree](https://github.com/RazrFalcon/roxmltree) and [getrandom](https://github.com/rust-random/getrandom)
+  (MIT / Apache-2.0).
+
+Guild Wars 2 is a trademark of ArenaNet, LLC and NCSOFT Corporation. This project isn't affiliated with or
+endorsed by ArenaNet, NCSOFT or Raidcore.
+
+## License
+
+[MIT](LICENSE). The DLL also contains the libraries listed above, under their own licences.
