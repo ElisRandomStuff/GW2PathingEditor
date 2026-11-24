@@ -1,18 +1,22 @@
-//! The images players put in `<addon dir>/images/` to use as `iconFile` and `texture`.
+//! The images players put in `<addon dir>/images/` (the pack's) and `<addon dir>/user_resources/`
+//! (their own library, kept across imports) to use as `iconFile` and `texture`.
 
 use std::{fs, path::Path};
 
 pub const IMAGES_DIR: &str = "images";
+/// The user's library: never deleted or overwritten by an import.
+pub const LIBRARY_DIR: &str = "user_resources";
 
 /// How deep subfolders of `images/` are listed.
 const MAX_DEPTH: usize = 4;
 
-/// Every `.png` under `dir/images/`, as paths relative to `dir` with forward slashes (the way
+/// Every `.png` under `dir/images/` and `dir/user_resources/`, as paths relative to `dir` with forward slashes (the way
 /// `iconFile` and `texture` reference them), sorted. Marker icons must be PNG for TacO
 /// (docs/01 §2), so only PNGs are listed.
 pub fn scan(dir: &Path) -> Vec<String> {
     let mut found = Vec::new();
     walk(&dir.join(IMAGES_DIR), IMAGES_DIR, 0, &mut found);
+    walk(&dir.join(LIBRARY_DIR), LIBRARY_DIR, 0, &mut found);
     found.sort_by_key(|path| path.to_ascii_lowercase());
     found
 }
@@ -75,9 +79,16 @@ mod tests {
         for file in ["b.png", "A.PNG", "notes.txt", "icons/chest.png"] {
             fs::write(images.join(file), b"").unwrap();
         }
+        fs::create_dir_all(dir.join(LIBRARY_DIR)).unwrap();
+        fs::write(dir.join(LIBRARY_DIR).join("mine.png"), b"").unwrap();
         assert_eq!(
             scan(&dir),
-            vec!["images/A.PNG", "images/b.png", "images/icons/chest.png"]
+            vec![
+                "images/A.PNG",
+                "images/b.png",
+                "images/icons/chest.png",
+                "user_resources/mine.png"
+            ]
         );
         fs::remove_dir_all(&dir).unwrap();
     }

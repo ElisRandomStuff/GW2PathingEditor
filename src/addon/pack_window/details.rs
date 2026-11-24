@@ -16,12 +16,13 @@ use crate::{
     editor::{Editor, Join, Selection, StatusKind},
     format::fmt_float,
     geometry::distance,
-    images::IMAGES_DIR,
+    images::{IMAGES_DIR, LIBRARY_DIR},
     namespace, trail,
-    view::Visibility,
+    view::{Visibility, parse_flag},
 };
 use nexus::imgui::{
-    Drag, ListClipper, Selectable, SliderFlags, TableColumnFlags, TableColumnSetup, TableFlags, Ui,
+    Drag, ListClipper, Selectable, SliderFlags, StyleVar, TableColumnFlags, TableColumnSetup,
+    TableFlags, Ui,
 };
 use std::collections::BTreeSet;
 
@@ -65,6 +66,7 @@ fn fill_edits(editor: &Editor, state: &mut State) {
     state.lua = None;
     match &editor.selection {
         Some(Selection::Category(ns)) => {
+            state.rename = ns.clone();
             if let Some(category) = editor.pack.category(ns) {
                 state.display_name = attrs::get(&category.attrs, "DisplayName")
                     .unwrap_or_default()
@@ -89,8 +91,9 @@ fn pack_details(ui: &Ui, editor: &mut Editor, state: &mut State) {
     ui.text("Whole pack");
     ui.text_disabled(format!("Saved to {}", editor.file().display()));
     ui.text_disabled(format!(
-        "Images: put PNGs in {}",
-        editor.dir().join(IMAGES_DIR).display()
+        "Images: put PNGs in {} (the pack's) or {} (your library, kept when importing)",
+        editor.dir().join(IMAGES_DIR).display(),
+        editor.dir().join(LIBRARY_DIR).display()
     ));
     ui.separator();
     ui.text("New top-level category");
@@ -119,7 +122,7 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
     let other_attrs = other_attrs(
         &category.attrs,
         &[
-            &["DisplayName", "iconFile"][..],
+            &["DisplayName", "iconFile", "defaulttoggle"][..],
             &Visibility::ATTRS[..],
             &edited_attrs()[..],
         ]
@@ -155,6 +158,9 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
         ui,
         "The name shown in the overlays' menus. Any text. Empty: the overlays show the name.",
     );
+    if rename_row(ui, editor, state, ns) {
+        return;
+    }
 
     let target = Selection::Category(ns.to_owned());
     image_attr(
@@ -167,6 +173,7 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
         "Markers of this category and its subcategories use it unless they set their own.",
     );
     visibility_row(ui, editor, &target);
+    default_toggle(ui, editor, ns);
     conditions_section(ui, editor, state, &target);
     scripts_section(ui, editor, state, &target);
     ui.separator();
@@ -247,6 +254,89 @@ fn category_details(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State
         ui.text_disabled("To delete this category, move or delete what it holds first.");
     }
     show_other_attrs(ui, &other_attrs);
+}
+
+/// "Namespace": renames or moves the category with everything in it. True once it did (the
+/// selection then names the new namespace).
+fn rename_row(ui: &Ui, editor: &mut Editor, state: &mut State, ns: &str) -> bool {
+    ui.text("Namespace");
+    ui.same_line();
+    ui.set_next_item_width(-90.0);
+    let entered = ui
+        .input_text("##rename", &mut state.rename)
+        .enter_returns_true(true)
+        .build();
+    hover_hint(
+        ui,
+        "Renames or moves this category, with its subcategories, markers and trails:\n\
+         e.g. peak -> eli turns every peak.* into eli.*, and peak -> eli.peak moves it under eli.\n\
+         If the new namespace exists, the two are merged (its attributes win where both set one).\n\
+         toggleCategory values follow. Scripts aren't changed. Undo reverts it.",
+    );
+    let new = namespace::sanitize(&state.rename);
+    let changed = !new.is_empty() && !new.eq_ignore_ascii_case(ns);
+    let merges = changed && editor.pack.category(&new).is_some();
+    ui.same_line();
+    let go = if !changed {
+        dimmed_small_button(ui, "Rename")
+    } else if merges {
+        confirm_button(ui, &format!("rename:{ns}"), "Merge", "Click again")
+    } else {
+        ui.small_button("Rename") || entered
+    };
+    if changed {
+        written_as(ui, &state.rename);
+        let (pois, trails) = editor.pack.count_within(ns);
+        let what = format!("{pois} marker(s) and {trails} trail(s)");
+        if merges {
+            ui.text_colored(
+                YELLOW,
+                format!("{new} exists: {ns} will be merged into it, with {what}."),
+            );
+        } else {
+            ui.text_disabled(format!("Moves {what} to {new}."));
+        }
+    }
+    if go && changed && editor.rename_category(ns, &new).is_ok() {
+        state.edits_for = None;
+        return true;
+    }
+    false
+}
+
+/// A small button drawn faded, that does nothing.
+fn dimmed_small_button(ui: &Ui, label: &str) -> bool {
+    let token = ui.push_style_var(StyleVar::Alpha(0.45));
+    let _ = ui.small_button(label);
+    token.pop();
+    false
+}
+
+/// `defaulttoggle`: whether the category starts on in the overlays' category menus.
+fn default_toggle(ui: &Ui, editor: &mut Editor, ns: &str) {
+    let Some(category) = editor.pack.category(ns) else {
+        return;
+    };
+    let mut on = attrs::get(&category.attrs, "defaulttoggle").is_none_or(parse_flag);
+    if ui.checkbox("On when players first load the pack", &mut on)
+        && let Some(category) = editor.pack.category_mut(ns)
+    {
+        if on {
+            attrs::remove(&mut category.attrs, "defaulttoggle");
+        } else {
+            attrs::set(&mut category.attrs, "defaulttoggle", "0");
+        }
+        editor.commit(format!(
+            "{ns} now starts {} in the overlays.",
+            if on { "on" } else { "off" }
+        ));
+    }
+    hover_hint(
+        ui,
+        "defaulttoggle. Unticked, the category starts turned off in the overlays' category menus:\n\
+         players can turn it on, and the overlays remember their choice after that.\n\
+         (To hide it from the preview here instead, untick its box in the tree.)",
+    );
 }
 
 fn new_category_input(ui: &Ui, editor: &mut Editor, state: &mut State, parent: &str) {

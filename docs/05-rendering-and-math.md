@@ -77,7 +77,10 @@ for each section (split at (0,0,0)), optionally resampled so spacing ≤ 20 gu (
     v[2i]   = p[i] - side·halfWidth·flip ; uv = (1, dist/(2·halfWidth))
     v[2i+1] = p[i] + side·halfWidth·flip ; uv = (0, dist/(2·halfWidth))
 ```
-- UV.v grows with distance travelled, so a square texture tiles once per trail width. Scroll V by `time·animSpeed`
+- UV.v grows with distance travelled, so a square texture tiles once per trail width. **In our ImGui preview the
+  image came out upside down with that sign** (arrows pointing backwards, user report 2026-11-24), so
+  `src/addon/preview.rs` uses `-v`: the image's top faces the direction the trail was recorded in, as in the
+  overlays. Scroll V by `time·animSpeed`
   (TacO: `data.x = t_seconds·animSpeed` added to V).
 - TacO draws trails **twice** (CW then CCW culling) with the first pass at half RGB, so the underside looks darker.
   Depth test **off**.

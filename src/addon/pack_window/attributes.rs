@@ -10,7 +10,7 @@ use crate::{
     attrs::{self, Attrs},
     editor::{Editor, Selection},
     files::resolve,
-    images::{self, IMAGES_DIR},
+    images::{self, IMAGES_DIR, LIBRARY_DIR},
     view::{Visibility, parse_flag},
 };
 use nexus::imgui::{ChildWindow, Selectable, Ui};
@@ -181,11 +181,17 @@ pub(super) fn image_picker(ui: &Ui, editor: &mut Editor, state: &mut State) {
         return;
     };
     let folder = editor.dir().join(IMAGES_DIR);
-    ui.text(format!(
-        "Pick the {attr} ({} PNGs in {})",
-        state.images.len(),
-        folder.display()
-    ));
+    let library = editor.dir().join(LIBRARY_DIR);
+    ui.text(format!("Pick the {attr} ({} PNGs)", state.images.len()));
+    hover_hint(
+        ui,
+        &format!(
+            "From {} (the pack's images) and {} (your library:\n\
+             importing another pack never deletes or overwrites it).",
+            folder.display(),
+            library.display()
+        ),
+    );
     ui.set_next_item_width(240.0);
     ui.input_text("##picker_filter", &mut state.picker_filter)
         .hint("Filter")
@@ -212,8 +218,9 @@ pub(super) fn image_picker(ui: &Ui, editor: &mut Editor, state: &mut State) {
         .build(ui, || {
             if state.images.is_empty() {
                 ui.text_wrapped(format!(
-                    "No PNG files in {}. Put your icons and textures there, then Rescan.",
-                    folder.display()
+                    "No PNG files in {} or {}. Put your icons and textures there, then Rescan.",
+                    folder.display(),
+                    library.display()
                 ));
             }
             for path in state
@@ -223,8 +230,11 @@ pub(super) fn image_picker(ui: &Ui, editor: &mut Editor, state: &mut State) {
             {
                 thumbnails::draw(ui, editor.dir(), path, THUMB);
                 ui.same_line();
-                let name = path.strip_prefix("images/").unwrap_or(path);
-                if Selectable::new(name)
+                let name = match path.strip_prefix(&format!("{LIBRARY_DIR}/")) {
+                    Some(rest) => format!("library: {rest}"),
+                    None => path.strip_prefix("images/").unwrap_or(path).to_owned(),
+                };
+                if Selectable::new(&name)
                     .selected(current.as_deref() == Some(path))
                     .size([0.0, THUMB])
                     .build(ui)

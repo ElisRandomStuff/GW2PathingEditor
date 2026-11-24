@@ -3,8 +3,8 @@
 A [Raidcore Nexus](https://raidcore.gg/Nexus) addon for Guild Wars 2 to create and edit marker packs (TacO / Blish
 HUD Pathing / TaimiHUD format) in game.
 
-**Status:** early. It captures markers, records trails, and edits them in a pack tree (categories, positions,
-icons, textures, conditions, script hooks).
+**Status:** 1.0. It captures markers, records trails, and edits them in a pack tree (categories, positions,
+icons, textures, conditions, script hooks), and imports, merges and exports `.zip` / `.taco` packs.
 
 ## Install
 
@@ -61,11 +61,20 @@ they never clash with yours.
 ### Pack editor
 
 The pack as a tree: categories, with their markers and trails inside. *This map only* hides what's on other maps.
+The box in front of a category shows or hides it (and its subcategories) in the preview, for you only: the pack
+doesn't change, and the choice is kept in `settings.ini`. The line above the tree has *Hide all* (nothing hidden)
+or *Show all* (something hidden).
 Select an item to edit it on the right:
 
-- **Category:** display name, icon (`iconFile`, inherited by its markers), where it shows, *Add marker here*,
+- **Category:** display name, icon (`iconFile`, inherited by its markers), where it shows, *On when players first
+  load the pack* (`defaulttoggle`: unticked, it starts turned off in the overlays' menus), *Add marker here*,
   *Start a trail here*, *Select its markers*, *Use for captured markers / new trails*, new subcategory, delete
   (when empty).
+- **Namespace** (category): renames or moves it, with its subcategories, markers and trails. `peak` → `eli` turns
+  every `peak.*` into `eli.*`; `peak` → `eli.peak` moves it under `eli`. If the new namespace exists, the two are
+  merged (*Merge*, click twice), keeping its attributes where both set one: handy after *Add it to the current
+  pack* to fuse two packs' trees. `toggleCategory` values follow; `.lua` scripts that name the category are
+  listed in the status, to update by hand. Undo reverts it.
 - **Marker:** position (drag to nudge, Ctrl+click a box to type), *Move to my position*, category, icon, where it shows.
 - **Several markers** (Ctrl+click to add or remove one, Shift+click for a range, or *Select its markers* on a
   category): move them all (drag), *Move them here* (keeps their layout), category, icon, where they show, copy,
@@ -92,7 +101,8 @@ Select an item to edit it on the right:
 - **Choose...** picks an image from `images/`, with previews. Put your PNGs there (subfolders work), lowercase
   names without spaces for the best compatibility.
 - **Undo / Redo** (buttons): adding, moving, deleting, pasting markers and trail points, their category, icon,
-  visibility, conditions and scripts, and recording more of a trail. Not undoable: category edits, pasting or deleting whole trails.
+  visibility, conditions and scripts, recording more of a trail, and renaming or merging categories. Not undoable:
+  other category edits, pasting or deleting whole trails.
 - **Copy / Paste / Paste here** (buttons) go through the clipboard as text:
   - Markers and trails as `<POI>` / `<Trail>` lines, so you can paste lines from another pack's file, or paste
     ours into one. Pasted items get new GUIDs, and go into the selected category if one is.
@@ -105,10 +115,19 @@ Select an item to edit it on the right:
 - **Export...** writes the pack to `export/<name>.zip` or `.taco` (the same file, two names): the XML at the root,
   then the images, `.trl` files and `.lua` scripts it uses, at their paths. Files the pack uses but the folder
   lacks are listed in the status. Ready to drop into TacO's, Blish HUD's or TaimiHUD's marker folder.
-- **Import...** opens a `.zip` / `.taco` pack you put in `import/`, **in place of** the one you're editing. All its
-  XML files are merged into `captures.xml`, and its other files are unpacked at their paths. The current pack is
-  first backed up to `export/backup-<date>.zip` (every file of the folder but `import/`, `export/` and
-  `settings.ini`); import that backup to get it back. Paths outside the pack (absolute, `..`) are skipped.
+- **Import...** takes a `.zip` / `.taco` pack you put in `import/`. All its XML files are read as one, and its other
+  files are unpacked at their paths. Paths outside the pack (absolute, `..`) are skipped. Two ways:
+  - *Replace the current pack*: the pack's files are deleted and the imported one takes their place.
+  - *Add it to the current pack*: its categories, markers and trails are merged in. A file that differs from yours
+    at the same path is added under a new name (`icon_2.png`) and its items point to that; for `.lua` scripts and
+    library files yours are kept (merge scripts by hand). Items with a GUID the pack already uses get a new one.
+
+  Before importing, it asks whether to back up the current pack to `export/backup-<date>.zip` (every file of the
+  folder but `import/`, `export/`, `user_resources/` and `settings.ini`). Import the backup to get it back.
+  *No backup* needs a second click.
+- **`user_resources/`** is your own library of icons and textures: the image picker lists it next to `images/`
+  (as `library: ...`), and importing never deletes or overwrites it. A pack using library images exports them
+  with it; importing such a pack fills in the library files you don't have.
 
 ### Seeing the pack in TaimiHUD
 
@@ -129,11 +148,11 @@ All in `<GW2>/addons/PathingEditor/`:
 - `captures.xml`: categories, markers and trails. It's a complete small pack, so together with `trails/` and
   `images/` you can drop the folder's content into an overlay's marker folder to preview it.
 - `trails/*.trl`: the trails' points.
-- `images/`: your icons and textures. Paths in the XML (`images/chest.png`, `trails/map50_1.trl`) are relative to
+- `images/`: the pack's icons and textures. `user_resources/`: your own library of them, kept across imports. Paths in the XML (`images/chest.png`, `trails/map50_1.trl`) are relative to
   the addon folder, the way they are relative to a pack's root.
 - `settings.ini`: the window's options.
 - `import/`: packs (`.zip`, `.taco`) to import. `export/`: exports and the backups made before an import. Neither
-  is part of the pack.
+  is part of the pack, and importing doesn't touch them.
 
 ## Build (from Linux)
 
@@ -161,7 +180,7 @@ Everything outside `src/addon/` is platform-independent and unit-tested on Linux
 | `clipboard.rs` | Copy/paste text: `<POI>`/`<Trail>` lines, `x, y, z` lines |
 | `settings.rs`, `images.rs` | `settings.ini`; the PNGs of `images/` |
 | `conditions.rs` | The filter attributes (festival, mount, profession, schedule, ...): known values and checks |
-| `archive.rs` | `.zip` / `.taco`: export, folder backup, import in place of the pack |
+| `archive.rs` | `.zip` / `.taco`: export, folder backup, import in place of the pack or merged into it |
 | `scripts.rs` | `script-*` attributes: split like Pathing, checked against the functions of the pack's `.lua` files |
 | `attrs.rs`, `namespace.rs`, `files.rs`, `geometry.rs`, `format.rs`, `guid.rs` | Small helpers |
 

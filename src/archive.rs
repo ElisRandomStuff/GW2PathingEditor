@@ -24,6 +24,9 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 /// addon folder, and never part of the pack.
 pub const IMPORT_DIR: &str = "import";
 pub const EXPORT_DIR: &str = "export";
+/// The user's own images (icons, textures), kept whatever is imported: never deleted, never
+/// overwritten, not backed up. Lowercase, like the paths the safe profile writes.
+pub use crate::images::LIBRARY_DIR;
 pub const EXTENSIONS: [&str; 2] = ["zip", "taco"];
 
 /// Limits against broken or hostile archives.
@@ -38,6 +41,11 @@ fn is_addon_file(top: &str) -> bool {
     [IMPORT_DIR, EXPORT_DIR, SETTINGS_FILE]
         .iter()
         .any(|n| n.eq_ignore_ascii_case(top))
+}
+
+/// Top-level names [`folder_files`] leaves out: the addon's own files and the library.
+fn is_kept(top: &str) -> bool {
+    is_addon_file(top) || top.eq_ignore_ascii_case(LIBRARY_DIR)
 }
 
 /// `name` with `\` turned into `/`, without `./` and empty segments.
@@ -110,10 +118,6 @@ pub fn pack_files(dir: &Path, pack: &Pack) -> Vec<String> {
             out.push(path);
         }
     };
-    let file_attr = |name: &str| {
-        let name = name.strip_prefix("bh-").unwrap_or(name);
-        name.eq_ignore_ascii_case("iconFile") || name.eq_ignore_ascii_case("texture")
-    };
     fn walk(categories: &[Category], f: &mut impl FnMut(&[(String, String)])) {
         for category in categories {
             f(&category.attrs);
@@ -122,7 +126,7 @@ pub fn pack_files(dir: &Path, pack: &Pack) -> Vec<String> {
     }
     let mut from_attrs = |attrs: &[(String, String)]| {
         for (name, value) in attrs {
-            if file_attr(name) {
+            if is_file_attr(name) {
                 add(value);
             }
         }
@@ -194,7 +198,7 @@ pub fn folder_files(dir: &Path) -> Vec<(String, PathBuf)> {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if prefix.is_empty() && is_addon_file(&name) {
+            if prefix.is_empty() && is_kept(&name) {
                 continue;
             }
             let Ok(kind) = entry.file_type() else {
@@ -404,47 +408,188 @@ pub fn read_archive(path: &Path) -> Result<Import, String> {
     })
 }
 
+/// What an import did with the archive's files (besides the XML).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Written {
+    /// Files written.
+    pub files: usize,
+    /// Archive files that differ from the one already at their path, which was kept: scripts
+    /// (they can't be merged automatically) and the library's files.
+    pub kept: Vec<String>,
+    /// Archive files written under another name because a different file was at their path:
+    /// (path in the archive, path written). The imported items now use the new path.
+    pub renamed: Vec<(String, String)>,
+}
+
 impl Import {
-    /// Deletes the pack's files from the addon folder (keeping `import/`, `export/` and the
-    /// settings), then writes the archive's files and the merged XML as `captures.xml`.
-    /// Returns how many files were written.
-    pub fn replace_folder(mut self, dir: &Path) -> Result<usize, String> {
+    /// Deletes the pack's files from the addon folder (keeping `import/`, `export/`, the
+    /// library and the settings), then writes the archive's files and its XML as
+    /// `captures.xml`.
+    pub fn replace_folder(mut self, dir: &Path) -> Result<Written, String> {
         clear_folder(dir)?;
-        let mut written = 0;
-        let mut total = 0u64;
-        for (i, name) in &self.files {
-            let Some(path) = resolve(dir, name) else {
-                continue;
-            };
-            let entry = self
-                .archive
-                .by_index(*i)
-                .map_err(|e| format!("{name}: {e}"))?;
-            let n = write_entry(entry, &path).map_err(|e| format!("{name}: {e}"))?;
-            total += n;
-            if total > MAX_TOTAL_BYTES {
-                return Err("The archive unpacks to more than it says.".to_owned());
-            }
-            written += 1;
-        }
+        let written = self.write_files(dir, false)?;
         pack::save_file(&dir.join(CAPTURES_FILE), &self.pack)
             .map_err(|e| format!("{CAPTURES_FILE}: {e}"))?;
         Ok(written)
     }
+
+    /// Adds the archive to `current`: writes its files next to the pack's (a different file
+    /// already at the same path is kept, and the archive's is written under a new name), then
+    /// saves `current` plus the archive's categories, markers and trails as `captures.xml`.
+    /// Imported items whose GUID the pack already uses get a new one; returns how many too.
+    pub fn merge_into(mut self, dir: &Path, current: &Pack) -> Result<(Written, usize), String> {
+        let written = self.write_files(dir, true)?;
+        let mut imported = std::mem::take(&mut self.pack);
+        rename_references(&mut imported, &written.renamed);
+        let new_guids = fresh_guids(current, &mut imported);
+        let mut merged = current.clone();
+        merged.merge(imported);
+        pack::save_file(&dir.join(CAPTURES_FILE), &merged)
+            .map_err(|e| format!("{CAPTURES_FILE}: {e}"))?;
+        Ok((written, new_guids))
+    }
+
+    fn write_files(&mut self, dir: &Path, merge: bool) -> Result<Written, String> {
+        let mut out = Written::default();
+        let mut total = 0u64;
+        let mut taken = BTreeSet::new();
+        for (i, name) in self.files.clone() {
+            let Some(path) = resolve(dir, &name) else {
+                continue;
+            };
+            let entry = self
+                .archive
+                .by_index(i)
+                .map_err(|e| format!("{name}: {e}"))?;
+            let bytes = read_entry(entry).map_err(|e| format!("{name}: {e}"))?;
+            total += bytes.len() as u64;
+            if total > MAX_TOTAL_BYTES {
+                return Err("The archive unpacks to more than it says.".to_owned());
+            }
+            let write = |path: &Path| -> Result<(), String> {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("{name}: {e}"))?;
+                }
+                write_atomic(path, &bytes).map_err(|e| format!("{name}: {e}"))
+            };
+            if path.exists() {
+                if fs::read(&path).is_ok_and(|existing| existing == bytes) {
+                    continue;
+                }
+                let top = name.split('/').next().unwrap_or_default();
+                if !merge || has_extension(&name, "lua") || top.eq_ignore_ascii_case(LIBRARY_DIR) {
+                    out.kept.push(name);
+                    continue;
+                }
+                let new = free_name(dir, &name, &taken);
+                let Some(new_path) = resolve(dir, &new) else {
+                    continue;
+                };
+                write(&new_path)?;
+                taken.insert(new.to_lowercase());
+                out.renamed.push((name, new));
+            } else {
+                write(&path)?;
+                taken.insert(name.to_lowercase());
+            }
+            out.files += 1;
+        }
+        Ok(out)
+    }
 }
 
-fn write_entry(entry: impl Read, path: &Path) -> io::Result<u64> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+/// `a/b.png` → the first of `a/b_2.png`, `a/b_3.png`, ... that's free.
+fn free_name(dir: &Path, name: &str, taken: &BTreeSet<String>) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !ext.contains('/') => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (2u32..)
+        .map(|n| format!("{stem}_{n}{ext}"))
+        .find(|candidate| {
+            !taken.contains(&candidate.to_lowercase())
+                && resolve(dir, candidate).is_some_and(|p| !p.exists())
+        })
+        .expect("some number is free")
+}
+
+fn is_file_attr(name: &str) -> bool {
+    let name = name.strip_prefix("bh-").unwrap_or(name);
+    name.eq_ignore_ascii_case("iconFile") || name.eq_ignore_ascii_case("texture")
+}
+
+/// Points the imported items' file attributes and `trailData` at the renamed files.
+fn rename_references(pack: &mut Pack, renamed: &[(String, String)]) {
+    if renamed.is_empty() {
+        return;
     }
+    let new_name = |value: &str| {
+        let key = normalize(value).to_lowercase();
+        renamed
+            .iter()
+            .find(|(old, _)| old.to_lowercase() == key)
+            .map(|(_, new)| new.clone())
+    };
+    let fix = |attrs: &mut [(String, String)]| {
+        for (name, value) in attrs.iter_mut() {
+            if is_file_attr(name)
+                && let Some(new) = new_name(value)
+            {
+                *value = new;
+            }
+        }
+    };
+    fn walk(categories: &mut [Category], fix: &impl Fn(&mut [(String, String)])) {
+        for category in categories {
+            fix(&mut category.attrs);
+            walk(&mut category.children, fix);
+        }
+    }
+    walk(&mut pack.categories, &fix);
+    for poi in &mut pack.pois {
+        fix(&mut poi.attrs);
+    }
+    for trail in &mut pack.trails {
+        fix(&mut trail.attrs);
+        if let Some(new) = new_name(&trail.file) {
+            trail.file = new;
+        }
+    }
+}
+
+/// Gives the imported markers and trails whose GUID is already used a new one. Returns how
+/// many.
+fn fresh_guids(current: &Pack, imported: &mut Pack) -> usize {
+    let mut used: BTreeSet<String> = current
+        .pois
+        .iter()
+        .map(|p| p.guid.clone())
+        .chain(current.trails.iter().map(|t| t.guid.clone()))
+        .collect();
+    let mut changed = 0;
+    let guids = imported
+        .pois
+        .iter_mut()
+        .map(|p| &mut p.guid)
+        .chain(imported.trails.iter_mut().map(|t| &mut t.guid));
+    for guid in guids {
+        if !used.insert(guid.clone()) {
+            *guid = crate::guid::new_guid();
+            used.insert(guid.clone());
+            changed += 1;
+        }
+    }
+    changed
+}
+
+fn read_entry(entry: impl Read) -> io::Result<Vec<u8>> {
     let mut limited = entry.take(MAX_FILE_BYTES + 1);
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(io::Error::other("bigger than it says"));
     }
-    write_atomic(path, &bytes)?;
-    Ok(bytes.len() as u64)
+    Ok(bytes)
 }
 
 /// Deletes the pack's files ([`folder_files`]) and the folders left empty.
@@ -595,7 +740,7 @@ mod tests {
         assert_eq!(import.xml_files, 1);
         assert_eq!(import.pack.pois.len(), 1);
         assert!(import.warnings.is_empty(), "{:?}", import.warnings);
-        assert_eq!(import.replace_folder(&dir).unwrap(), 3);
+        assert_eq!(import.replace_folder(&dir).unwrap().files, 3);
         assert!(!dir.join("images/unused.png").exists(), "replaced");
         assert!(dir.join("images/chest.png").exists());
         assert!(dir.join("settings.ini").exists(), "kept");
@@ -649,7 +794,7 @@ mod tests {
         assert_eq!(import.warnings.len(), 4, "{:?}", import.warnings);
         let target = dir.join("pack");
         fs::create_dir_all(&target).unwrap();
-        assert_eq!(import.replace_folder(&target).unwrap(), 1);
+        assert_eq!(import.replace_folder(&target).unwrap().files, 1);
         assert_eq!(
             fs::read_to_string(target.join("Data/A.png")).unwrap(),
             "first"
@@ -659,6 +804,101 @@ mod tests {
 
         fs::write(&path, "not a zip").unwrap();
         assert!(read_archive(&path).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn merging_and_the_library() {
+        let dir = temp_dir();
+        // The pack being edited.
+        let mut current = Pack::default();
+        let mut mine = Poi::new(50, [0.0; 3], "mine");
+        mine.guid = "AAAAAAAAAAAAAAAAAAAAAA==".into();
+        current.pois.push(mine);
+        write(&dir, "images/icon.png", "mine");
+        write(&dir, "images/same.png", "same");
+        write(&dir, "pack.lua", "-- mine");
+        write(&dir, &format!("{LIBRARY_DIR}/lib.png"), "my library");
+        pack::save_file(&dir.join(CAPTURES_FILE), &current).unwrap();
+
+        // An archive using the same paths.
+        let path = dir.join("other.zip");
+        let mut zip = ZipWriter::new(File::create(&path).unwrap());
+        let options = SimpleFileOptions::default();
+        let xml = format!(
+            "<OverlayData><MarkerCategory name=\"theirs\" iconFile=\"images/icon.png\"/><POIs>\
+             <POI MapID=\"50\" xpos=\"1\" ypos=\"1\" zpos=\"1\" type=\"theirs\" GUID=\"AAAAAAAAAAAAAAAAAAAAAA==\" iconFile=\"Images\\Icon.png\"/>\
+             <POI MapID=\"50\" xpos=\"2\" ypos=\"2\" zpos=\"2\" type=\"theirs\" iconFile=\"{LIBRARY_DIR}/new.png\"/>\
+             </POIs></OverlayData>"
+        );
+        for (name, body) in [
+            ("theirs.xml", xml.as_str()),
+            ("images/icon.png", "theirs"),
+            ("images/same.png", "same"),
+            ("pack.lua", "-- theirs"),
+            (&format!("{LIBRARY_DIR}/lib.png"), "their library"),
+            (&format!("{LIBRARY_DIR}/new.png"), "new to the library"),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let (written, new_guids) = read_archive(&path)
+            .unwrap()
+            .merge_into(&dir, &current)
+            .unwrap();
+        assert_eq!(new_guids, 1);
+        assert_eq!(
+            written.renamed,
+            vec![("images/icon.png".to_owned(), "images/icon_2.png".to_owned())]
+        );
+        assert_eq!(
+            written.kept,
+            vec!["pack.lua".to_owned(), format!("{LIBRARY_DIR}/lib.png")]
+        );
+        assert_eq!(written.files, 2, "icon_2.png and the new library file");
+        assert_eq!(
+            fs::read_to_string(dir.join("images/icon.png")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("images/icon_2.png")).unwrap(),
+            "theirs"
+        );
+        assert_eq!(fs::read_to_string(dir.join("pack.lua")).unwrap(), "-- mine");
+
+        let merged = pack::load_file(&dir.join(CAPTURES_FILE)).unwrap().pack;
+        assert_eq!(merged.pois.len(), 3);
+        assert_eq!(
+            merged.pois[0].guid, "AAAAAAAAAAAAAAAAAAAAAA==",
+            "ours unchanged"
+        );
+        assert_ne!(merged.pois[1].guid, "AAAAAAAAAAAAAAAAAAAAAA==");
+        assert_eq!(
+            attrs::get(&merged.pois[1].attrs, "iconFile"),
+            Some("images/icon_2.png")
+        );
+        assert_eq!(
+            attrs::get(&merged.category("theirs").unwrap().attrs, "iconFile"),
+            Some("images/icon_2.png")
+        );
+
+        // The library survives a replacing import, and isn't in backups.
+        let backup_path = dir.join(EXPORT_DIR).join("b.zip");
+        backup(&dir, &backup_path).unwrap();
+        assert!(
+            !names(&backup_path)
+                .iter()
+                .any(|n| n.starts_with(LIBRARY_DIR))
+        );
+        let written = read_archive(&path).unwrap().replace_folder(&dir).unwrap();
+        assert_eq!(written.kept, vec![format!("{LIBRARY_DIR}/lib.png")]);
+        assert_eq!(
+            fs::read_to_string(dir.join(LIBRARY_DIR).join("lib.png")).unwrap(),
+            "my library"
+        );
+        assert!(!dir.join("images/icon_2.png").exists(), "replaced");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,7 +1,7 @@
 //! User settings, kept in `settings.ini` in the addon directory as `key = value` lines.
 
-use crate::{files::write_atomic, format::fmt_float};
-use std::{fs, io, ops::RangeInclusive, path::Path};
+use crate::{files::write_atomic, format::fmt_float, namespace};
+use std::{collections::BTreeSet, fs, io, ops::RangeInclusive, path::Path};
 
 pub const RAISE_RANGE: RangeInclusive<f32> = 0.0..=5.0;
 pub const SPACING_RANGE: RangeInclusive<f32> = 0.25..=5.0;
@@ -20,6 +20,9 @@ pub struct Settings {
     pub trail_manual: bool,
     /// Draw the pack's markers and trails in the world.
     pub preview: bool,
+    /// Categories (lowercase namespaces) the preview leaves out, with their subcategories.
+    /// Only for the editor: the pack doesn't change.
+    pub hidden_categories: BTreeSet<String>,
 }
 
 impl Default for Settings {
@@ -33,6 +36,7 @@ impl Default for Settings {
             trail_spacing: 1.0,
             trail_manual: false,
             preview: true,
+            hidden_categories: BTreeSet::new(),
         }
     }
 }
@@ -63,6 +67,13 @@ impl Settings {
                 "trail_spacing" => set_float(&mut settings.trail_spacing, value, SPACING_RANGE),
                 "trail_manual" => set_bool(&mut settings.trail_manual, value),
                 "preview" => set_bool(&mut settings.preview, value),
+                "hidden_categories" => {
+                    settings.hidden_categories = value
+                        .split(',')
+                        .map(|ns| ns.trim().to_lowercase())
+                        .filter(|ns| !ns.is_empty())
+                        .collect();
+                }
                 _ => {}
             }
         }
@@ -78,14 +89,51 @@ impl Settings {
              raise_by = {}\n\
              trail_spacing = {}\n\
              trail_manual = {}\n\
-             preview = {}\n",
+             preview = {}\n\
+             hidden_categories = {}\n",
             bool(self.skip_near_duplicates),
             bool(self.raise_markers),
             fmt_float(self.raise_by, 3),
             fmt_float(self.trail_spacing, 3),
             bool(self.trail_manual),
             bool(self.preview),
+            self.hidden_categories
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
         )
+    }
+
+    /// Whether the preview draws category `ns`: neither it nor a category above it is hidden.
+    pub fn is_shown(&self, ns: &str) -> bool {
+        if self.hidden_categories.is_empty() {
+            return true;
+        }
+        let ns = ns.to_lowercase();
+        let mut prefix = String::new();
+        namespace::segments(&ns).all(|segment| {
+            prefix = namespace::join(&prefix, segment);
+            !self.hidden_categories.contains(&prefix)
+        })
+    }
+
+    /// Whether `ns` itself is hidden (not counting the categories above it).
+    pub fn is_hidden_itself(&self, ns: &str) -> bool {
+        self.hidden_categories.contains(&ns.to_lowercase())
+    }
+
+    pub fn set_hidden(&mut self, ns: &str, hidden: bool) {
+        let ns = ns.to_lowercase();
+        // A comma would split it when read back.
+        if ns.is_empty() || ns.contains(',') {
+            return;
+        }
+        if hidden {
+            self.hidden_categories.insert(ns);
+        } else {
+            self.hidden_categories.remove(&ns);
+        }
     }
 
     /// How far new markers are raised, in metres.
@@ -139,6 +187,7 @@ mod tests {
             trail_spacing: 2.0,
             trail_manual: true,
             preview: false,
+            hidden_categories: ["a.b".to_owned(), "c".to_owned()].into(),
         };
         assert_eq!(Settings::parse(&settings.to_text()), settings);
     }
@@ -154,6 +203,28 @@ mod tests {
                 raise_by: 5.0,
                 ..Settings::default()
             }
+        );
+    }
+
+    #[test]
+    fn hidden_categories() {
+        let mut settings = Settings::default();
+        assert!(settings.is_shown("a.b"));
+        settings.set_hidden("A", true);
+        assert!(!settings.is_shown("a"));
+        assert!(!settings.is_shown("a.B.c"), "below a hidden one");
+        assert!(settings.is_shown("ab"), "not a prefix match");
+        assert!(settings.is_shown(""));
+        assert!(settings.is_hidden_itself("a"));
+        assert!(!settings.is_hidden_itself("a.b"));
+        settings.set_hidden("x,y", true);
+        assert_eq!(settings.hidden_categories.len(), 1, "commas refused");
+        settings.set_hidden("a", false);
+        assert!(settings.is_shown("a.b"));
+        assert!(
+            Settings::parse("hidden_categories = ")
+                .hidden_categories
+                .is_empty()
         );
     }
 

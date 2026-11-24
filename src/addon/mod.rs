@@ -7,7 +7,7 @@ mod ui;
 
 use crate::{
     editor::{Editor, Join, StatusKind},
-    images::IMAGES_DIR,
+    images::{IMAGES_DIR, LIBRARY_DIR},
     view,
 };
 use nexus::data_link::mumble::UiState;
@@ -81,6 +81,7 @@ fn load() {
             }
             // Where players put the images they pick icons and textures from.
             let _ = std::fs::create_dir_all(dir.join(IMAGES_DIR));
+            let _ = std::fs::create_dir_all(dir.join(LIBRARY_DIR));
             Editor::open(&dir)
         }
         Err(e) => {

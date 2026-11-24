@@ -83,6 +83,20 @@ pub(crate) fn write_attrs(out: &mut String, attrs: &[(String, String)]) {
     }
 }
 
+/// What [`Pack::rename_category`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Renamed {
+    /// Markers and trails that moved with it.
+    pub pois: usize,
+    pub trails: usize,
+    /// The new namespace existed: the two were merged.
+    pub merged: bool,
+    /// Attributes both set while merging, where the existing category's value was kept.
+    pub kept: usize,
+    /// `toggleCategory` / `toggle` values rewritten.
+    pub references: usize,
+}
+
 /// A `<MarkerCategory>`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Category {
@@ -179,6 +193,38 @@ fn ensure(nodes: &mut Vec<Category>, ns: &str) {
 
 /// Adds `category` to `nodes`, merging it into a category of the same name (later attribute
 /// values win, like a second declaration in a pack).
+/// How many levels `category` spans (1 without subcategories).
+fn subtree_depth(category: &Category) -> usize {
+    1 + category
+        .children
+        .iter()
+        .map(subtree_depth)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Like [`merge`], but where both set an attribute the existing value stays. Counts those.
+fn merge_keeping(nodes: &mut Vec<Category>, category: Category, kept: &mut usize) {
+    match nodes
+        .iter_mut()
+        .find(|c| c.name.eq_ignore_ascii_case(&category.name))
+    {
+        Some(existing) => {
+            for (name, value) in category.attrs {
+                match attrs::get(&existing.attrs, &name) {
+                    Some(current) if current != value => *kept += 1,
+                    Some(_) => {}
+                    None => existing.attrs.push((name, value)),
+                }
+            }
+            for child in category.children {
+                merge_keeping(&mut existing.children, child, kept);
+            }
+        }
+        None => nodes.push(category),
+    }
+}
+
 fn merge(nodes: &mut Vec<Category>, category: Category) {
     match nodes
         .iter_mut()
@@ -278,6 +324,118 @@ impl Pack {
                 .filter(|t| namespace::is_within(&t.category, ns))
                 .count(),
         )
+    }
+
+    /// Renames or moves category `old` (with its subcategories) to `new`, a sanitized
+    /// namespace: `peak` → `eli` turns every `peak.*` into `eli.*`, and `peak` → `eli.peak`
+    /// moves it under `eli`. Markers, trails and the attributes naming categories
+    /// (`toggleCategory`, `toggle`) follow. If `new` already exists, the two are merged: where
+    /// both set an attribute, `new`'s value stays.
+    pub fn rename_category(&mut self, old: &str, new: &str) -> Result<Renamed, String> {
+        if new.is_empty() {
+            return Err("Enter the new namespace.".into());
+        }
+        if old.eq_ignore_ascii_case(new) {
+            return Err(format!("{old} is already called that."));
+        }
+        let moved = self
+            .category(old)
+            .ok_or_else(|| format!("No category {old}."))?;
+        let depth = namespace::segments(new).count() + subtree_depth(moved) - 1;
+        if depth > MAX_CATEGORY_DEPTH {
+            return Err(format!(
+                "That would nest categories {depth} levels deep (the most is {MAX_CATEGORY_DEPTH})."
+            ));
+        }
+        let merged = self.category(new).is_some();
+        let (pois, trails) = self.count_within(old);
+
+        // Detach the subtree, then put it at its new place.
+        let (parent, name) = match old.rsplit_once('.') {
+            Some((parent, name)) => (Some(parent), name),
+            None => (None, old),
+        };
+        let siblings = match parent {
+            Some(parent) => {
+                &mut self
+                    .category_mut(parent)
+                    .ok_or("No parent category.")?
+                    .children
+            }
+            None => &mut self.categories,
+        };
+        let index = siblings
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| format!("No category {old}."))?;
+        let mut subtree = siblings.remove(index);
+        let (new_parent, new_name) = match new.rsplit_once('.') {
+            Some((parent, name)) => (parent, name),
+            None => ("", new),
+        };
+        subtree.name = new_name.to_owned();
+        let mut kept = 0;
+        let siblings = if new_parent.is_empty() {
+            &mut self.categories
+        } else {
+            ensure(&mut self.categories, new_parent);
+            &mut self
+                .category_mut(new_parent)
+                .ok_or("No parent category.")?
+                .children
+        };
+        merge_keeping(siblings, subtree, &mut kept);
+
+        let rebase = |ns: &str| -> Option<String> {
+            namespace::is_within(ns, old).then(|| {
+                let rest: Vec<&str> = namespace::segments(ns)
+                    .skip(namespace::segments(old).count())
+                    .collect();
+                std::iter::once(new)
+                    .chain(rest)
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+        };
+        let mut references = 0;
+        let mut fix_attrs = |attrs: &mut Attrs| {
+            for (name, value) in attrs.iter_mut() {
+                let name = name.strip_prefix("bh-").unwrap_or(name);
+                if (name.eq_ignore_ascii_case("toggleCategory")
+                    || name.eq_ignore_ascii_case("toggle"))
+                    && let Some(rebased) = rebase(value.trim())
+                {
+                    *value = rebased;
+                    references += 1;
+                }
+            }
+        };
+        fn walk(categories: &mut [Category], f: &mut impl FnMut(&mut Attrs)) {
+            for category in categories {
+                f(&mut category.attrs);
+                walk(&mut category.children, f);
+            }
+        }
+        walk(&mut self.categories, &mut fix_attrs);
+        for poi in &mut self.pois {
+            fix_attrs(&mut poi.attrs);
+            if let Some(ns) = rebase(&poi.category) {
+                poi.category = ns;
+            }
+        }
+        for trail in &mut self.trails {
+            fix_attrs(&mut trail.attrs);
+            if let Some(ns) = rebase(&trail.category) {
+                trail.category = ns;
+            }
+        }
+        Ok(Renamed {
+            pois,
+            trails,
+            merged,
+            kept,
+            references,
+        })
     }
 
     /// Removes the category `ns` and its subcategories, if no POI or trail is in them.
@@ -539,6 +697,87 @@ mod tests {
             pois,
             trails,
         }
+    }
+
+    /// Namespaces of the tree, depth first.
+    fn tree(pack: &Pack) -> Vec<String> {
+        fn walk(nodes: &[Category], parent: &str, out: &mut Vec<String>) {
+            for c in nodes {
+                let ns = namespace::join(parent, &c.name);
+                out.push(ns.clone());
+                walk(&c.children, &ns, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&pack.categories, "", &mut out);
+        out
+    }
+
+    #[test]
+    fn renaming_categories() {
+        let mut toggler = sample("peak.jps.a");
+        attrs::set(&mut toggler.attrs, "toggleCategory", "peak.jps");
+        let mut p = pack(
+            vec![toggler, sample("peak"), sample("other")],
+            vec![Trail::new(50, "Peak.JPs", "trails/a.trl")],
+        );
+        p.ensure_used_categories();
+        attrs::set(
+            &mut p.category_mut("peak").unwrap().attrs,
+            "DisplayName",
+            "Peak",
+        );
+        p.ensure_category("eli.jps");
+        attrs::set(
+            &mut p.category_mut("eli").unwrap().attrs,
+            "DisplayName",
+            "Eli",
+        );
+
+        // Into an existing one: merged, its attributes kept.
+        let renamed = p.rename_category("peak", "eli").unwrap();
+        assert_eq!(
+            renamed,
+            Renamed {
+                pois: 2,
+                trails: 1,
+                merged: true,
+                kept: 1,
+                references: 1
+            }
+        );
+        assert_eq!(tree(&p), vec!["other", "eli", "eli.jps", "eli.jps.a"]);
+        assert_eq!(p.category("eli").unwrap().display_name(), "Eli");
+        assert_eq!(p.pois[0].category, "eli.jps.a");
+        assert_eq!(
+            attrs::get(&p.pois[0].attrs, "toggleCategory"),
+            Some("eli.jps")
+        );
+        assert_eq!(p.pois[1].category, "eli");
+        assert_eq!(p.pois[2].category, "other", "untouched");
+        assert_eq!(p.trails[0].category, "eli.JPs", "the rest keeps its casing");
+
+        // Moved under another, then into its own subcategory.
+        p.rename_category("eli.jps", "other.jps").unwrap();
+        assert_eq!(tree(&p), vec!["other", "other.jps", "other.jps.a", "eli"]);
+        p.rename_category("other", "other.old").unwrap();
+        assert_eq!(
+            tree(&p),
+            vec![
+                "eli",
+                "other",
+                "other.old",
+                "other.old.jps",
+                "other.old.jps.a"
+            ]
+        );
+        assert_eq!(p.pois[0].category, "other.old.jps.a");
+
+        assert!(p.rename_category("nope", "x").is_err());
+        assert!(p.rename_category("eli", "ELI").is_err());
+        assert!(p.rename_category("eli", "").is_err());
+        let deep = vec!["x"; MAX_CATEGORY_DEPTH].join(".");
+        assert!(p.rename_category("other", &deep).is_err(), "too deep");
     }
 
     #[test]

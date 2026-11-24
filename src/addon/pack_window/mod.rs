@@ -45,6 +45,8 @@ struct State {
     /// The selection the text boxes below were filled from.
     edits_for: Option<Option<Selection>>,
     display_name: String,
+    /// The category's namespace box, to rename or move it.
+    rename: String,
     category: String,
     new_child: String,
     /// What the image picker sets: the item(s) and the attribute.
@@ -66,6 +68,9 @@ struct State {
     lua: Option<LuaScan>,
     /// The archives in the import folder, listed when the Import popup opens.
     imports: Vec<String>,
+    /// The archive picked in the Import popup, and whether to merge it rather than replace.
+    import_pick: Option<String>,
+    import_merge: bool,
     /// The Export popup's name, and its extension (index in `archive::EXTENSIONS`).
     export_name: String,
     export_extension: usize,
@@ -78,6 +83,7 @@ impl Default for State {
             filter: String::new(),
             edits_for: None,
             display_name: String::new(),
+            rename: String::new(),
             category: String::new(),
             new_child: String::new(),
             picker: None,
@@ -90,6 +96,8 @@ impl Default for State {
             text_edits: BTreeMap::new(),
             lua: None,
             imports: Vec::new(),
+            import_pick: None,
+            import_merge: false,
             export_name: String::new(),
             export_extension: 0,
         }

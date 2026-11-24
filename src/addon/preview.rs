@@ -168,7 +168,11 @@ impl Prim {
             } => match texture {
                 Some(texture) => draw_list
                     .add_image_quad(*texture, *p1, *p2, *p3, *p4)
-                    .uv([0.0, *v0], [1.0, *v0], [1.0, *v1], [0.0, *v1])
+                    // `v` counts forward along the trail, but the image's top must face
+                    // forward, as in TacO, Blish HUD and TaimiHUD (arrows point the way the
+                    // trail goes), so it runs the other way. The sampler repeats, so negative
+                    // values tile like positive ones.
+                    .uv([0.0, -*v0], [1.0, -*v0], [1.0, -*v1], [0.0, -*v1])
                     .col(*color)
                     .build(),
                 None => {
@@ -245,20 +249,21 @@ impl Context<'_, '_> {
         let map_id = self.live.map_id;
 
         for (i, trail) in editor.pack.trails.iter().enumerate() {
-            if trail.map_id == map_id {
+            if trail.map_id == map_id && editor.settings.is_shown(&trail.category) {
                 self.world_trail(&mut prims, camera, trail, self.trail_highlighted(i));
             }
         }
         if let Some(Selection::Trail(i)) = editor.selection
             && let Some(trail) = editor.pack.trails.get(i)
             && trail.map_id == map_id
+            && editor.settings.is_shown(&trail.category)
         {
             world_points(&mut prims, camera, trail, &editor.selected_points);
         }
 
         let mut markers = Vec::new();
         for (i, poi) in editor.pack.pois.iter().enumerate() {
-            if poi.map_id != map_id {
+            if poi.map_id != map_id || !editor.settings.is_shown(&poi.category) {
                 continue;
             }
             let style = MarkerStyle::of(self.pack(), poi);
@@ -382,7 +387,7 @@ impl Context<'_, '_> {
         };
 
         for (i, trail) in editor.pack.trails.iter().enumerate() {
-            if trail.map_id != map_id {
+            if trail.map_id != map_id || !editor.settings.is_shown(&trail.category) {
                 continue;
             }
             let style = TrailStyle::of(self.pack(), trail);
@@ -405,7 +410,7 @@ impl Context<'_, '_> {
         }
 
         for (i, poi) in editor.pack.pois.iter().enumerate() {
-            if poi.map_id != map_id {
+            if poi.map_id != map_id || !editor.settings.is_shown(&poi.category) {
                 continue;
             }
             let style = MarkerStyle::of(self.pack(), poi);

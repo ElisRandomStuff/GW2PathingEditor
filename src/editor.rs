@@ -1,11 +1,13 @@
 //! Editor state and actions, independent of Nexus and ImGui.
 
 use crate::{
-    archive, clipboard, files,
+    archive,
+    attrs::Attrs,
+    clipboard, files,
     format::fmt_float,
     geometry::{add, distance, sub},
     guid, namespace,
-    pack::{self, LoadReport, Pack, Poi},
+    pack::{self, Category, LoadReport, Pack, Poi},
     settings::Settings,
     trail::{self, Trail},
 };
@@ -117,6 +119,13 @@ enum Snapshot {
     Pois(Vec<Poi>),
     /// The points of the trail with this GUID.
     Trail(String, Vec<[f32; 3]>),
+    /// The category tree, every marker, and each trail's category and attributes (by GUID,
+    /// not its points): for changes to the pack's structure, like renaming a category.
+    Structure {
+        categories: Vec<Category>,
+        pois: Vec<Poi>,
+        trails: Vec<(String, String, Attrs)>,
+    },
 }
 
 struct UndoStep {
@@ -258,6 +267,19 @@ impl Editor {
         }
     }
 
+    fn structure_snapshot(&self) -> Snapshot {
+        Snapshot::Structure {
+            categories: self.pack.categories.clone(),
+            pois: self.pack.pois.clone(),
+            trails: self
+                .pack
+                .trails
+                .iter()
+                .map(|t| (t.guid.clone(), t.category.clone(), t.attrs.clone()))
+                .collect(),
+        }
+    }
+
     fn trail_snapshot(&self, index: usize) -> Option<Snapshot> {
         let trail = self.pack.trails.get(index)?;
         Some(Snapshot::Trail(trail.guid.clone(), trail.points.clone()))
@@ -306,6 +328,7 @@ impl Editor {
         // The state it replaces, for the opposite direction.
         let current = match &step.snapshot {
             Snapshot::Pois(_) => Some(Snapshot::Pois(self.pack.pois.clone())),
+            Snapshot::Structure { .. } => Some(self.structure_snapshot()),
             Snapshot::Trail(guid, _) => {
                 let index = self.pack.trails.iter().position(|t| t.guid == *guid);
                 if index.is_some() && index == self.recording().map(|(i, _)| i) {
@@ -347,6 +370,35 @@ impl Editor {
                     if set.is_empty() {
                         self.selection = None;
                     }
+                }
+                self.save();
+            }
+            Snapshot::Structure {
+                categories,
+                pois,
+                trails,
+            } => {
+                self.pack.categories = categories;
+                self.pack.pois = pois;
+                for (guid, category, attrs) in trails {
+                    if let Some(trail) = self.pack.trails.iter_mut().find(|t| t.guid == guid) {
+                        trail.category = category;
+                        trail.attrs = attrs;
+                    }
+                }
+                self.pack.ensure_used_categories();
+                let count = self.pack.pois.len();
+                match &mut self.selection {
+                    Some(Selection::Pois(set)) => {
+                        set.retain(|&i| i < count);
+                        if set.is_empty() {
+                            self.selection = None;
+                        }
+                    }
+                    Some(Selection::Category(ns)) if self.pack.category(ns).is_none() => {
+                        self.selection = None;
+                    }
+                    _ => {}
                 }
                 self.save();
             }
@@ -656,6 +708,93 @@ impl Editor {
             Err(text) => self.set_status(StatusKind::Warning, text.clone()),
         }
         result
+    }
+
+    /// Renames or moves category `ns` to `input` (sanitized), with everything in it: see
+    /// [`Pack::rename_category`]. Merges into it if it exists. Undoable. Returns the new
+    /// namespace.
+    pub fn rename_category(&mut self, ns: &str, input: &str) -> Result<String, String> {
+        let new = self.checked_category(input)?;
+        let before = self.structure_snapshot();
+        let renamed = match self.pack.rename_category(ns, &new) {
+            Ok(renamed) => renamed,
+            Err(text) => return self.refuse(text),
+        };
+        self.push_undo(format!("rename {ns} to {new}"), before);
+
+        let rebase = |value: &str| -> Option<String> {
+            namespace::is_within(value, ns).then(|| {
+                let rest: Vec<&str> = namespace::segments(value)
+                    .skip(namespace::segments(ns).count())
+                    .collect();
+                std::iter::once(new.as_str())
+                    .chain(rest)
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+        };
+        if let Some(Selection::Category(selected)) = &self.selection
+            && let Some(moved) = rebase(selected)
+        {
+            self.selection = Some(Selection::Category(moved));
+        }
+        for input in [&mut self.category_input, &mut self.trail_category_input] {
+            if let Some(moved) = rebase(&namespace::sanitize(input)) {
+                *input = moved;
+            }
+        }
+        let hidden = std::mem::take(&mut self.settings.hidden_categories);
+        self.settings.hidden_categories = hidden
+            .into_iter()
+            .map(|h| rebase(&h).map(|m| m.to_lowercase()).unwrap_or(h))
+            .collect();
+
+        let mut text = format!(
+            "{} {ns} to {new}: {} marker(s), {} trail(s).",
+            if renamed.merged { "Merged" } else { "Renamed" },
+            renamed.pois,
+            renamed.trails
+        );
+        if renamed.references > 0 {
+            text.push_str(&format!(
+                " {} toggleCategory value(s) updated.",
+                renamed.references
+            ));
+        }
+        if renamed.kept > 0 {
+            text.push_str(&format!(
+                " {} attribute(s) both set: {new}'s values were kept.",
+                renamed.kept
+            ));
+        }
+        let scripts = self.scripts_naming(ns);
+        let kind = if scripts.is_empty() {
+            StatusKind::Info
+        } else {
+            text.push_str(&format!(
+                " {} mention {ns}: scripts aren't changed, update them by hand.",
+                short_list(scripts.iter().map(String::as_str))
+            ));
+            StatusKind::Warning
+        };
+        self.set_status(kind, text);
+        self.save();
+        Ok(new)
+    }
+
+    /// The `.lua` files whose text contains `ns` (any casing), e.g. in `World:CategoryByType`.
+    fn scripts_naming(&self, ns: &str) -> Vec<String> {
+        let needle = ns.to_lowercase();
+        crate::scripts::LuaScan::scan(&self.dir)
+            .files
+            .into_iter()
+            .filter(|f| {
+                files::resolve(&self.dir, &f.path)
+                    .and_then(|p| fs::read_to_string(p).ok())
+                    .is_some_and(|text| text.to_lowercase().contains(&needle))
+            })
+            .map(|f| f.path)
+            .collect()
     }
 
     fn checked_category(&mut self, input: &str) -> Result<String, String> {
@@ -1351,16 +1490,22 @@ impl Editor {
         }
     }
 
-    /// Replaces the pack with the archive `file` of `import/`, after backing the current one up
-    /// to `export/backup-<date>.zip`. Says how it went in the status.
-    pub fn import(&mut self, file: &str) {
-        match self.try_import(file) {
+    /// Imports the archive `file` of `import/`: in place of the pack (`merge` false) or added
+    /// to it. With `backup`, the current pack is first saved to `export/backup-<date>.zip`.
+    /// Says how it went in the status.
+    pub fn import(&mut self, file: &str, merge: bool, backup: bool) {
+        match self.try_import(file, merge, backup) {
             Ok((kind, text)) => self.set_status(kind, text),
             Err(e) => self.set_status(StatusKind::Error, format!("Import failed: {e}")),
         }
     }
 
-    fn try_import(&mut self, file: &str) -> Result<(StatusKind, String), String> {
+    fn try_import(
+        &mut self,
+        file: &str,
+        merge: bool,
+        backup: bool,
+    ) -> Result<(StatusKind, String), String> {
         if self.recorder.is_some() {
             return Err("stop the trail being recorded first.".into());
         }
@@ -1382,7 +1527,8 @@ impl Editor {
         );
 
         self.flush();
-        let backup = if archive::folder_files(&self.dir).is_empty() {
+        self.save();
+        let backup = if !backup || archive::folder_files(&self.dir).is_empty() {
             None
         } else {
             let out = self
@@ -1394,13 +1540,18 @@ impl Editor {
             })?;
             Some(out)
         };
-        let written = import.replace_folder(&self.dir).map_err(|e| match &backup {
+        let halfway = |e: String| match &backup {
             Some(b) => format!(
-                "{e}. The folder may be half replaced: the previous pack is in {}, import it to get it back.",
+                "{e}. The folder may be half changed: the previous pack is in {}, import it to get it back.",
                 b.display()
             ),
             None => e,
-        })?;
+        };
+        let (written, new_guids) = if merge {
+            import.merge_into(&self.dir, &self.pack).map_err(halfway)?
+        } else {
+            (import.replace_folder(&self.dir).map_err(halfway)?, 0)
+        };
 
         let mut fresh = Editor::open(&self.dir);
         fresh.settings = self.settings.clone();
@@ -1409,10 +1560,32 @@ impl Editor {
         *self = fresh;
 
         let mut text = format!(
-            "Imported {file} ({xml_files} XML file(s)): {categories} top-level categories, {pois} markers, {trails} trails, {written} other files."
+            "{} {file} ({xml_files} XML file(s)): {categories} top-level categories, {pois} markers, {trails} trails, {} other files.",
+            if merge { "Added" } else { "Imported" },
+            written.files
         );
-        if let Some(b) = &backup {
-            text.push_str(&format!(" The previous pack is in {}.", b.display()));
+        match &backup {
+            Some(b) => text.push_str(&format!(" The previous pack is in {}.", b.display())),
+            None => text.push_str(" No backup was made."),
+        }
+        if !written.renamed.is_empty() {
+            notes.push(format!(
+                "{} file(s) differ from yours at the same path, so they were added under a new name ({}).",
+                written.renamed.len(),
+                short_list(written.renamed.iter().map(|(_, new)| new.as_str()))
+            ));
+        }
+        if !written.kept.is_empty() {
+            notes.push(format!(
+                "Kept your version of {} (scripts and {} files are never overwritten: merge them by hand).",
+                short_list(written.kept.iter().map(String::as_str)),
+                archive::LIBRARY_DIR
+            ));
+        }
+        if new_guids > 0 {
+            notes.push(format!(
+                "{new_guids} imported item(s) had a GUID the pack already used and got a new one."
+            ));
         }
         notes.extend(reopened.map(|s| s.text));
         let kind = if notes.is_empty() {
@@ -1517,6 +1690,16 @@ impl Editor {
     }
 }
 
+/// The first few of `items`, joined, with "and N more".
+fn short_list<'a>(items: impl Iterator<Item = &'a str>) -> String {
+    let items: Vec<&str> = items.collect();
+    let shown = items.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+    match items.len() {
+        n if n > 4 => format!("{shown} and {} more", n - 4),
+        _ => shown,
+    }
+}
+
 /// The last non-empty category of a list, to restore a category box.
 fn last_category<'a>(
     categories: impl DoubleEndedIterator<Item = &'a String>,
@@ -1550,6 +1733,44 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_category_and_undoing_it() {
+        let dir = temp_dir();
+        let mut editor = Editor::open(&dir);
+        editor.category_input = "peak.jps".into();
+        editor.capture(50, [1.0, 2.0, 3.0]).unwrap();
+        editor.category_input = "eli.chests".into();
+        editor.capture(50, [9.0, 2.0, 3.0]).unwrap();
+        editor.category_input = "peak.jps".into();
+        editor.settings.set_hidden("peak.jps", true);
+        fs::write(dir.join("pack.lua"), "World:CategoryByType(\"peak.jps\")").unwrap();
+        editor.selection = Some(Selection::Category("peak.jps".into()));
+
+        assert_eq!(editor.rename_category("peak", "Eli").unwrap(), "eli");
+        assert_eq!(editor.pack.pois[0].category, "eli.jps");
+        assert!(editor.pack.category("peak").is_none());
+        assert_eq!(
+            editor.selection,
+            Some(Selection::Category("eli.jps".into()))
+        );
+        assert_eq!(editor.category_input, "eli.jps");
+        assert!(editor.settings.is_hidden_itself("eli.jps"));
+        let status = editor.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Warning, "{}", status.text);
+        assert!(status.text.contains("pack.lua"), "{}", status.text);
+        assert_eq!(Editor::open(&dir).pack.pois[0].category, "eli.jps", "saved");
+
+        editor.undo();
+        assert_eq!(editor.pack.pois[0].category, "peak.jps");
+        assert!(editor.pack.category("peak.jps").is_some());
+        assert_eq!(editor.selection, None, "eli.jps no longer exists");
+        editor.redo();
+        assert_eq!(editor.pack.pois[0].category, "eli.jps");
+        assert!(editor.pack.category("peak").is_none());
+        assert!(editor.rename_category("eli", " ").is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn export_and_import() {
         let dir = temp_dir();
         let mut editor = Editor::open(&dir);
@@ -1565,7 +1786,7 @@ mod tests {
         fs::create_dir_all(dir.join(archive::IMPORT_DIR)).unwrap();
         fs::copy(&exported, dir.join(archive::IMPORT_DIR).join("a.taco")).unwrap();
         let settings = editor.settings.clone();
-        editor.import("a.taco");
+        editor.import("a.taco", false, true);
         let status = editor.status.clone().unwrap();
         assert_eq!(status.kind, StatusKind::Info, "{}", status.text);
         assert!(status.text.contains("backup-"), "{}", status.text);
@@ -1581,14 +1802,22 @@ mod tests {
             .find(|e| e.file_name().to_string_lossy().starts_with("backup-"))
             .unwrap();
         fs::copy(backup.path(), dir.join(archive::IMPORT_DIR).join("b.zip")).unwrap();
-        editor.import("b.zip");
+        editor.import("b.zip", false, true);
         assert_eq!(editor.pack.pois.len(), 2);
 
-        editor.import("../captures.xml");
+        // Added to it, without a backup.
+        let backups = |dir: &Path| fs::read_dir(dir.join(archive::EXPORT_DIR)).unwrap().count();
+        let before = backups(&dir);
+        editor.import("a.taco", true, false);
+        assert_eq!(editor.pack.pois.len(), 3, "merged");
+        assert!(editor.status.as_ref().unwrap().text.contains("No backup"));
+        assert_eq!(backups(&dir), before);
+
+        editor.import("../captures.xml", false, true);
         assert_eq!(editor.status.as_ref().unwrap().kind, StatusKind::Error);
-        editor.import("missing.zip");
+        editor.import("missing.zip", false, true);
         assert_eq!(editor.status.as_ref().unwrap().kind, StatusKind::Error);
-        assert_eq!(editor.pack.pois.len(), 2, "a failed import changes nothing");
+        assert_eq!(editor.pack.pois.len(), 3, "a failed import changes nothing");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -66,6 +66,8 @@ impl TreeIndex {
 
 /// A click in the tree.
 enum Click {
+    /// A category's "show in the preview" box: the namespace and its new state.
+    Show(String, bool),
     /// Select this (or nothing: the whole pack).
     Select(Option<Selection>),
     /// A marker: Ctrl and Shift decide what it does.
@@ -85,6 +87,34 @@ pub(super) fn tree(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State)
         ui.current_font_size() + 2.0 * TREE_PADDING[0],
     ));
 
+    // Always one line, so the tree doesn't move when the first category is hidden.
+    let hidden = editor.settings.hidden_categories.len();
+    if hidden > 0 {
+        ui.text_disabled(format!("{hidden} categor(ies) hidden in the preview."));
+        ui.same_line();
+        if ui.small_button("Show all") {
+            editor.settings.hidden_categories.clear();
+        }
+        hover_hint(ui, "Ticks every category's box again.");
+    } else {
+        ui.text_disabled("All categories shown in the preview.");
+        ui.same_line();
+        if ui.small_button("Hide all") {
+            let tops: Vec<String> = editor
+                .pack
+                .categories
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+            for ns in tops {
+                editor.settings.set_hidden(&ns, true);
+            }
+        }
+        hover_hint(
+            ui,
+            "Unticks every top-level category, e.g. to then tick back only the ones you're working on.",
+        );
+    }
     let (pois, trails) = (editor.pack.pois.len(), editor.pack.trails.len());
     if Selectable::new(format!("Whole pack: {pois} marker(s), {trails} trail(s)"))
         .selected(editor.selection.is_none())
@@ -128,6 +158,7 @@ pub(super) fn tree(ui: &Ui, editor: &mut Editor, live: &Live, state: &mut State)
             state.poi_anchor = None;
         }
         Some(Click::Poi(i)) => click_poi(ui, editor, state, i, &order),
+        Some(Click::Show(ns, shown)) => editor.settings.set_hidden(&ns, !shown),
         None => {}
     }
 }
@@ -175,6 +206,24 @@ impl Tree<'_> {
             flags |= TreeNodeFlags::SELECTED;
         }
         let label = format!("{}  {}", category.display_name(), counts(pois, trails));
+        // The box: whether the preview draws it. Greyed when a category above is unticked.
+        let settings = &self.editor.settings;
+        let mut shown = !settings.is_hidden_itself(ns);
+        let by_parent = shown && !settings.is_shown(ns);
+        let dim = (!shown || by_parent).then(|| ui.push_style_var(StyleVar::Alpha(0.5)));
+        if ui.checkbox(format!("##show:{ns}"), &mut shown) {
+            *clicked = Some(Click::Show(ns.to_owned(), shown));
+        }
+        hover_hint(
+            ui,
+            if by_parent {
+                "Hidden in the preview with the category above it."
+            } else {
+                "Show its markers and trails in the preview (world, minimap, map).
+                 Only for you: the pack doesn't change."
+            },
+        );
+        ui.same_line();
         let mut node = TreeNode::new(format!("c:{ns}"))
             .label::<&str, &str>(&label)
             .flags(flags);
@@ -183,6 +232,9 @@ impl Tree<'_> {
             node = node.opened(true, Condition::Always);
         }
         let node = node.push(ui);
+        if let Some(dim) = dim {
+            dim.pop();
+        }
         if ui.is_item_clicked() && !ui.is_item_toggled_open() {
             *clicked = Some(Click::Select(Some(Selection::Category(ns.to_owned()))));
         }

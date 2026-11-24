@@ -71,11 +71,14 @@ Notes were compiled on 2026-11-22.
   attributes, and checks that the latter name global functions the pack's `.lua` files define and load (docs/03
   §7). It doesn't edit, run or syntax-check Lua.
 - **Archives (2026-11-23):** *Export...* writes `export/<name>.zip|.taco` (XML + used images, `.trl`, `.lua`).
-  *Import...* takes a pack from `import/` and **replaces** the current one, after backing up the whole folder
-  (except `import/`, `export/`, `settings.ini`) to `export/backup-<date>.zip`. No in-game file dialog. Uses the
-  `zip` crate with flate2's pure-Rust backend.
-- Undo/redo covers markers and trail points (snapshots); category edits and whole-trail creation/deletion aren't
-  undoable yet.
+  *Import...* takes a pack from `import/` and either **replaces** the current one or **merges** into it (differing
+  files renamed, scripts and library files kept, duplicate GUIDs renewed). It asks first whether to back up the
+  folder (except `import/`, `export/`, `user_resources/`, `settings.ini`) to `export/backup-<date>.zip`; "No"
+  needs a second click. `user_resources/` is the user's image library, never deleted or overwritten by an import.
+  No in-game file dialog. Uses the `zip` crate with flate2's pure-Rust backend.
+- Undo/redo covers markers and trail points (snapshots), and category renames/merges (a "structure" snapshot: the
+  tree, markers, and trails' category and attributes). Other category edits and whole-trail creation/deletion
+  aren't undoable yet.
 
 ## Open questions
 
